@@ -1,0 +1,257 @@
+{
+  "data": {
+    "habits": [
+      {
+        "id": "db92cc",
+        "name": "Order pizz",
+        "records": [
+          {
+            "day": "2025-02-08",
+            "done": true
+          },
+          {
+            "day": "2025-02-07",
+            "done": true
+          },
+          {
+            "day": "2025-01-25",
+            "done": true
+          },
+          {
+            "day": "2025-01-23",
+            "done": true
+          },
+          {
+            "day": "2025-01-21",
+            "done": true
+          }
+        ],
+        "status": "archive"
+      },
+      {
+        "id": "515dea",
+        "name": "Running",
+        "records": [
+          {
+            "day": "2025-01-30",
+            "done": true
+          },
+          {
+            "day": "2025-01-25",
+            "done": true
+          },
+          {
+            "day": "2025-01-18",
+            "done": true
+          }
+        ],
+        "status": "archive"
+      },
+      {
+        "id": "57ca94",
+        "name": "Table Tennis",
+        "records": [
+          {
+            "day": "2025-02-03",
+            "done": true
+          },
+          {
+            "day": "2025-02-01",
+            "done": true
+          },
+          {
+            "day": "2025-01-30",
+            "done": true
+          },
+          {
+            "day": "2025-01-27",
+            "done": true
+          },
+          {
+            "day": "2025-01-24",
+            "done": true
+          },
+          {
+            "day": "2025-01-23",
+            "done": true
+          },
+          {
+            "day": "2025-01-17",
+            "done": true
+          },
+          {
+            "day": "2025-01-16",
+            "done": true
+          }
+        ],
+        "status": "archive"
+      },
+      {
+        "id": "3939fe",
+        "name": "Clean",
+        "records": [
+          {
+            "day": "2025-02-08",
+            "done": true
+          },
+          {
+            "day": "2025-02-01",
+            "done": true
+          },
+          {
+            "day": "2025-01-22",
+            "done": true
+          },
+          {
+            "day": "2025-01-19",
+            "done": true
+          },
+          {
+            "day": "2025-01-15",
+            "done": true
+          },
+          {
+            "day": "2025-01-12",
+            "done": true
+          }
+        ],
+        "status": "archive"
+      },
+      {
+        "id": "bd7d47",
+        "name": "Call mom",
+        "records": [
+          {
+            "day": "2025-02-08",
+            "done": true
+          },
+          {
+            "day": "2025-01-23",
+            "done": true
+          },
+          {
+            "day": "2025-01-18",
+            "done": true
+          }
+        ],
+        "status": "archive"
+      },
+      {
+        "name": "Morning Meditation",
+        "records": [
+          {
+            "day": "2025-02-08",
+            "done": true
+          },
+          {
+            "day": "2025-02-04",
+            "done": true
+          },
+          {
+            "day": "2025-02-05",
+            "done": true
+          },
+          {
+            "day": "2025-02-02",
+            "done": true
+          },
+          {
+            "day": "2025-02-03",
+            "done": true
+          }
+        ],
+        "id": "b3bb0c"
+      },
+      {
+        "name": "Read Book or Article",
+        "records": [
+          {
+            "day": "2025-02-05",
+            "done": true
+          },
+          {
+            "day": "2025-02-04",
+            "done": true
+          }
+        ],
+        "id": "f53b22"
+      },
+      {
+        "name": "Workouts",
+        "records": [
+          {
+            "day": "2025-02-05",
+            "done": false
+          },
+          {
+            "day": "2025-02-06",
+            "done": false
+          }
+        ],
+        "id": "ea9cce"
+      },
+      {
+        "name": "Jogging",
+        "records": [
+          {
+            "day": "2025-02-05",
+            "done": true
+          },
+          {
+            "day": "2025-02-06",
+            "done": true
+          }
+        ],
+        "id": "a6980c"
+      },
+      {
+        "name": "Final Thesis",
+        "records": [],
+        "id": "78a9d4"
+      },
+      {
+        "name": "Learn English",
+        "records": [
+          {
+            "day": "2025-02-06",
+            "done": true
+          }
+        ],
+        "id": "e4110f"
+      },
+      {
+        "name": "IELTS Preparation",
+        "records": [],
+        "id": "38d1fe"
+      },
+      {
+        "name": "Daily Competitive Programming",
+        "records": [
+          {
+            "day": "2025-02-06",
+            "done": true
+          }
+        ],
+        "id": "452482"
+      },
+      {
+        "name": "Night Meditation",
+        "records": [
+          {
+            "day": "2025-02-04",
+            "done": true
+          },
+          {
+            "day": "2025-02-02",
+            "done": true
+          },
+          {
+            "day": "2025-02-03",
+            "done": true
+          }
+        ],
+        "id": "bc6ba6"
+      }
+    ]
+  }
+}

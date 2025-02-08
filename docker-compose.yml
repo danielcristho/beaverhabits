@@ -1,6 +1,6 @@
 services:
   beaverhabits:
-    container_name: beaverhabits
+    container_name: habitstracker
     user: 1000:1000 # User permissions of your docker or default user.
     environment:
       # See the note below to find all the environment variables

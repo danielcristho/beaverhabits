@@ -5,10 +5,10 @@ from dataclasses import dataclass
 from typing import Callable, List, Optional
 
 from dateutil.relativedelta import relativedelta
-from nicegui import events, ui
+from nicegui import app, events, ui
 from nicegui.elements.button import Button
 
-from beaverhabits.configs import settings
+from beaverhabits.configs import TagSelectionMode, settings
 from beaverhabits.frontend import icons
 from beaverhabits.logging import logger
 from beaverhabits.storage.dict import DAY_MASK, MONTH_MASK
@@ -35,8 +35,8 @@ def menu_header(title: str, target: str):
     return link
 
 
-def compat_menu(name: str, callback: Callable):
-    return ui.menu_item(name, callback).props("dense").classes("items-center")
+def compat_menu(*args, **kwargs):
+    return ui.menu_item(*args, **kwargs).props("dense").classes("items-center")
 
 
 def menu_icon_button(
@@ -132,6 +132,7 @@ class HabitCheckBox(ui.checkbox):
         self.on("mouseup.prevent", self._mouse_up_event)
         self.on("touchend.prevent", self._mouse_up_event)
         self.on("touchmove", self._mouse_move_event)
+        # self.on("mousemove", self._mouse_move_event)
 
     def _update_style(self, value: bool):
         self.value = value
@@ -153,6 +154,7 @@ class HabitCheckBox(ui.checkbox):
             value = await note_tick(self.habit, self.day)
             if value is not None:
                 self._update_style(value)
+            await self._blur()
         else:
             if self.moving:
                 logger.info("Mouse moving, skip...")
@@ -169,6 +171,17 @@ class HabitCheckBox(ui.checkbox):
     async def _mouse_move_event(self):
         self.moving = True
         self.hold.set()
+
+    async def _blur(self):
+        # Resolve ripple issue
+        # https://github.com/quasarframework/quasar/blob/dev/ui/src/components/checkbox/QCheckbox.sass
+        await ui.run_javascript(
+            """
+           const checkboxes = document.querySelectorAll('.q-checkbox');
+           checkboxes.forEach(checkbox => {checkbox.blur()});
+           """
+        )
+        # self.run_method("blur")
 
 
 class HabitOrderCard(ui.card):
@@ -194,21 +207,42 @@ class HabitOrderCard(ui.card):
 
 class HabitNameInput(ui.input):
     def __init__(self, habit: Habit) -> None:
-        super().__init__(value=habit.name)
+        super().__init__(value=self.encode_name(habit.name, habit.tags))
         self.habit = habit
         self.validation = self._validate
         self.props("dense hide-bottom-space")
         self.on("blur", self._async_task)
 
     async def _async_task(self):
-        self.habit.name = self.value
-        logger.info(f"Habit Name changed to {self.value}")
+        name, tags = self.decode_name(self.value)
+        self.habit.name = name
+        logger.info(f"Habit Name changed to {name}")
+        self.habit.tags = tags
+        logger.info(f"Habit Tags changed to {tags}")
+
+        self.value = self.encode_name(name, tags)
 
     def _validate(self, value: str) -> Optional[str]:
         if not value:
             return "Name is required"
         if len(value) > 30:
             return "Too long"
+
+    @staticmethod
+    def encode_name(name: str, tags: list[str]) -> str:
+        if not tags:
+            return name
+
+        tags = [f"#{tag}" for tag in tags]
+        return f"{name} {' '.join(tags)}"
+
+    @staticmethod
+    def decode_name(name: str) -> tuple[str, list[str]]:
+        if "#" not in name:
+            return name, []
+
+        tokens = name.split("#")
+        return tokens[0].strip(), [x.strip() for x in tokens[1:]]
 
 
 class HabitStarCheckbox(ui.checkbox):
@@ -539,3 +573,67 @@ def habit_notes(records: List[CheckedRecord], limit: int = 10):
                 subtitle=record.day.strftime("%B %d, %Y"),
                 color=color,
             )
+
+
+class TagManager:
+    @staticmethod
+    def get_all() -> set[str]:
+        try:
+            return set(app.storage.client.get("index_tags_filter", []))
+        except Exception as e:
+            logger.error(f"Failed to get tags: {e}")
+            return set()
+
+    @staticmethod
+    def add(tag: str) -> None:
+        if settings.TAG_SELECTION_MODE == TagSelectionMode.SINGLE:
+            app.storage.client["index_tags_filter"] = [tag]
+        else:
+            tags = set(TagManager.get_all())
+            tags.add(tag)
+            app.storage.client["index_tags_filter"] = list(tags)
+
+    @staticmethod
+    def remove(tag: str) -> None:
+        tags = set(TagManager.get_all())
+        if tag not in tags:
+            logger.warning(f"Tag {tag} not found")
+
+        tags.remove(tag)
+        app.storage.client["index_tags_filter"] = list(tags)
+
+
+def tag_filters(active_habits: List[Habit], refresh: Callable):
+    all_tags = set(tag for habit in active_habits for tag in habit.tags)
+    all_tags = sorted(all_tags)
+
+    if all_tags:
+        with ui.row().classes("gap-0.5 justify-right w-80"):
+            for tag_name in all_tags:
+                TagChip(tag_name, refresh=refresh)
+
+
+class TagChip(ui.chip):
+    def __init__(self, tag_name: str, refresh: Callable) -> None:
+        super().__init__(
+            text=tag_name,
+            color="oklch(0.3 0 0)",
+            text_color="oklch(0.7 0 0)",
+            selectable=True,
+            selected=tag_name in TagManager.get_all(),
+        )
+
+        # https://tailwindcss.com/docs/colors
+        self.props("dense")
+        self.style("font-size: 0.8em; font-weight: 450; padding: 0.5rem 0.6rem;")
+
+        self.on_click(self._async_task)
+        self.refresh = refresh
+
+    async def _async_task(self):
+        if self.selected:
+            TagManager.add(self.text)
+        else:
+            TagManager.remove(self.text)
+
+        self.refresh()

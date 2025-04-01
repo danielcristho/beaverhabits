@@ -27,6 +27,9 @@ class Settings(BaseSettings):
     DEBUG: bool = False
     SENTRY_DSN: str = ""
 
+    # SaaS
+    CLOUD: bool = False
+
     # NiceGUI
     NICEGUI_STORAGE_SECRET: str = "dev"
     GUI_MOUNT_PATH: str = "/gui"
@@ -47,11 +50,12 @@ class Settings(BaseSettings):
     FIRST_DAY_OF_WEEK: int = calendar.MONDAY
     ENABLE_IOS_STANDALONE: bool = True
     ENABLE_DESKTOP_ALGIN_CENTER: bool = True
-    TAG_SELECTION_MODE: TagSelectionMode = TagSelectionMode.SINGLE
+    TAG_SELECTION_MODE: TagSelectionMode = TagSelectionMode.MULTI
 
     INDEX_SHOW_HABIT_COUNT: bool = False
     INDEX_HABIT_NAME_COLUMNS: int = 5
     INDEX_HABIT_DATE_COLUMNS: int = 5
+    INDEX_HABIT_DATE_REVERSE: bool = False
 
     def is_dev(self):
         return self.ENV == "dev"

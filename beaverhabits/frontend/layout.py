@@ -6,9 +6,17 @@ from nicegui import context, ui
 from beaverhabits.app.auth import user_logout
 from beaverhabits.configs import settings
 from beaverhabits.frontend import icons
-from beaverhabits.frontend.components import compat_menu, menu_header, menu_icon_button
+from beaverhabits.frontend.components import (
+    compat_menu,
+    menu_header,
+    menu_icon_button,
+)
 from beaverhabits.logging import logger
-from beaverhabits.storage.meta import get_page_title, get_root_path, is_demo
+from beaverhabits.storage.meta import (
+    get_page_title,
+    get_root_path,
+    is_page_demo,
+)
 
 
 def redirect(x):
@@ -20,6 +28,7 @@ def open_tab(x):
 
 
 def custom_header():
+    # Apple touch icon
     ui.add_head_html(
         '<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">'
     )
@@ -28,7 +37,6 @@ def custom_header():
         '<meta name="apple-mobile-web-app-status-bar-style" content="black">'
     )
     ui.add_head_html('<meta name="theme-color" content="#121212">')
-
     # viewBox="90 90 220 220"
     ui.add_head_html(
         '<link rel="apple-touch-icon" href="/statics/images/apple-touch-icon-v4.png">'
@@ -39,7 +47,12 @@ def custom_header():
 
     # Experimental iOS standalone mode
     if settings.ENABLE_IOS_STANDALONE:
-        ui.add_head_html('<meta name="apple-mobile-web-app-capable" content="yes">')
+        ui.add_head_html('<meta name="mobile-web-app-capable" content="yes">')
+
+    # SEO meta tags
+    ui.add_head_html(
+        '<meta name="description" content="A self-hosted habit tracking app without "Goals"">'
+    )
 
 
 def add_umami_headers():
@@ -48,50 +61,61 @@ def add_umami_headers():
     )
 
 
+def separator():
+    ui.separator().props('aria-hidden="true"')
+
+
 def menu_component() -> None:
     """Dropdown menu for the top-right corner of the page."""
-    with ui.menu():
-        show_import = not is_demo()
-        show_export = True
-
+    with ui.menu().props('role="menu"'):
         path = context.client.page.path
         if "add" in path:
             compat_menu("Reorder", lambda: redirect("order"))
         else:
-            compat_menu("Add", lambda: redirect("add"))
-        ui.separator()
+            add = compat_menu("Add", lambda: redirect("add"))
+            add.props('aria-label="Edit habit list"')
+        separator()
 
-        if show_export:
-            compat_menu("Export", lambda: open_tab("export"))
-            ui.separator()
-        if show_import:
-            compat_menu("Import", lambda: redirect("import"))
-            ui.separator()
+        compat_menu("Export", lambda: open_tab("export"))
+        separator()
+        imp = compat_menu("Import", lambda: redirect("import"))
+        separator()
+        if is_page_demo():
+            imp.classes("disabled")
 
-        compat_menu("Logout", lambda: user_logout() and ui.navigate.to("/login"))
+        if is_page_demo():
+            compat_menu("Login", lambda: ui.navigate.to("/login"))
+        else:
+            compat_menu("Logout", lambda: user_logout() and ui.navigate.to("/login"))
+
+
+def pre_cache():
+    # lazy load echart: https://github.com/zauberzeug/nicegui/discussions/1452
+    # hash: nicegui.dependencies.compute_key
+    # ui.context.client.on_connect(javascript.load_cache)
+    ui.add_css("body { background-color: #121212; color: white;  }")
 
 
 @contextmanager
 def layout(title: str | None = None, with_menu: bool = True):
     """Base layout for all pages."""
-
-    root_path = get_root_path()
-    title = title or get_page_title(root_path)
+    title = title or get_page_title()
 
     with ui.column() as c:
+        # Standard headers
+        custom_header()
+        add_umami_headers()
+        pre_cache()
+
         # Center the content on small screens
         c.classes("mx-auto")
         if not settings.ENABLE_DESKTOP_ALGIN_CENTER:
             c.classes("sm:mx-0")
 
-        # Standard headers
-        custom_header()
-        add_umami_headers()
-
         path = context.client.page.path
         logger.info(f"Rendering page: {path}")
         with ui.row().classes("min-w-full gap-x-0"):
-            menu_header(title, target=root_path)
+            menu_header(title, target=get_root_path())
             if with_menu:
                 ui.space()
                 with menu_icon_button(icons.MENU):

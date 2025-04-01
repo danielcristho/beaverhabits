@@ -1,13 +1,17 @@
 import asyncio
 import calendar
 import datetime
+import itertools
+from collections import OrderedDict
 from dataclasses import dataclass
-from typing import Callable, List, Optional
+from typing import Callable, List, Optional, Self
 
 from dateutil.relativedelta import relativedelta
 from nicegui import app, events, ui
 from nicegui.elements.button import Button
 
+from beaverhabits import const
+from beaverhabits.accessibility import index_badge_alternative_text
 from beaverhabits.configs import TagSelectionMode, settings
 from beaverhabits.frontend import icons
 from beaverhabits.logging import logger
@@ -23,7 +27,7 @@ CALENDAR_EVENT_MASK = "%Y/%m/%d"
 
 def link(text: str, target: str):
     return ui.link(text, target=target).classes(
-        "dark:text-white  no-underline hover:no-underline"
+        "dark:text-white no-underline hover:no-underline"
     )
 
 
@@ -32,21 +36,25 @@ def menu_header(title: str, target: str):
     link.classes(
         "text-semibold text-2xl dark:text-white no-underline hover:no-underline"
     )
+    link.props('role="heading" aria-level="1" aria-label="Go to home page"')
     return link
-
-
-def compat_menu(*args, **kwargs):
-    return ui.menu_item(*args, **kwargs).props("dense").classes("items-center")
 
 
 def menu_icon_button(
     icon_name: str, click: Optional[Callable] = None, tooltip: str | None = None
 ) -> Button:
-    button_props = "flat=true unelevated=true padding=xs backgroup=none"
-    button = ui.button(icon=icon_name, color=None, on_click=click).props(button_props)
+    button = ui.button(icon=icon_name, color=None, on_click=click)
+    button.props("flat=true unelevated=true padding=xs backgroup=none")
     if tooltip:
         button = button.tooltip(tooltip)
-    return button
+    # Accessibility
+    return button.props('aria-haspopup="true" aria-label="menu"')
+
+
+def compat_menu(*args, **kwargs):
+    menu_item = ui.menu_item(*args, **kwargs).classes("items-center")
+    # Accessibility
+    return menu_item.props('dense role="menuitem"')
 
 
 def habit_tick_dialog(record: CheckedRecord | None):
@@ -64,6 +72,7 @@ def habit_tick_dialog(record: CheckedRecord | None):
                 },
             )
             t.classes("w-full")
+            # t.props("autofocus")
 
             with ui.row():
                 ui.button("Yes", on_click=lambda: dialog.submit((True, t.value))).props(
@@ -106,10 +115,18 @@ async def habit_tick(habit: Habit, day: datetime.date, value: bool):
 
 
 class HabitCheckBox(ui.checkbox):
-    def __init__(self, habit: Habit, day: datetime.date, value: bool) -> None:
+    def __init__(
+        self,
+        habit: Habit,
+        today: datetime.date,
+        day: datetime.date,
+        ticked_days: list[datetime.date],
+    ) -> None:
+        value = day in ticked_days
         super().__init__("", value=value)
         self.habit = habit
         self.day = day
+        self.today = today
         self.props(
             f'checked-icon="{icons.DONE}" unchecked-icon="{icons.CLOSE}" keep-color'
         )
@@ -119,6 +136,10 @@ class HabitCheckBox(ui.checkbox):
         self.hold = asyncio.Event()
         self.moving = False
 
+        # Click Event
+        self.on("click", self._click_event)
+
+        # Touch and hold event
         # Sequence of events: https://ui.toast.com/posts/en_20220106
         # 1. Mouse click: mousedown -> mouseup -> click
         # 2. Touch click: touchstart -> touchend -> mousemove -> mousedown -> mouseup -> click
@@ -127,12 +148,17 @@ class HabitCheckBox(ui.checkbox):
         self.on("touchstart", self._mouse_down_event)
 
         # Event modifiers
-        # 1. Prevent checkbox default behavior
-        # 2. Prevent propagation of the event
-        self.on("mouseup.prevent", self._mouse_up_event)
-        self.on("touchend.prevent", self._mouse_up_event)
+        # 1. *Prevent* checkbox default behavior
+        # 2. *Prevent* propagation of the event
+        self.on("mouseup", self._mouse_up_event)
+        self.on("touchend", self._mouse_up_event)
         self.on("touchmove", self._mouse_move_event)
         # self.on("mousemove", self._mouse_move_event)
+
+        # Checklist: value change, scrolling
+        # - Desktop browser
+        # - iOS browser / standalone mode
+        # - Android browser / PWA
 
     def _update_style(self, value: bool):
         self.value = value
@@ -142,6 +168,15 @@ class HabitCheckBox(ui.checkbox):
             self.props("color=grey-8")
         else:
             self.props("color=currentColor")
+
+        # Accessibility
+        days = (self.today - self.day).days
+        if days == 0:
+            self.props('aria-label="Today"')
+        elif days == 1:
+            self.props('aria-label="Yesterday"')
+        else:
+            self.props(f'aria-label="{days} days ago"')
 
     async def _mouse_down_event(self, e):
         logger.info(f"Down event: {self.day}, {e.args.get('type')}")
@@ -155,20 +190,20 @@ class HabitCheckBox(ui.checkbox):
             if value is not None:
                 self._update_style(value)
             await self._blur()
-        else:
-            if self.moving:
-                logger.info("Mouse moving, skip...")
-                return
-            value = not self.value
-            self._update_style(value)
-            # Do update completion status
-            await habit_tick(self.habit, self.day, value)
+
+    async def _click_event(self, e):
+        value = e.sender.value
+        self._update_style(value)
+
+        # Do update completion status
+        await habit_tick(self.habit, self.day, value)
 
     async def _mouse_up_event(self, e):
         logger.info(f"Up event: {self.day}, {e.args.get('type')}")
         self.hold.set()
 
-    async def _mouse_move_event(self):
+    async def _mouse_move_event(self, e):
+        # logger.info(f"Move event: {self.day}, {e}")
         self.moving = True
         self.hold.set()
 
@@ -181,7 +216,6 @@ class HabitCheckBox(ui.checkbox):
            checkboxes.forEach(checkbox => {checkbox.blur()});
            """
         )
-        # self.run_method("blur")
 
 
 class HabitOrderCard(ui.card):
@@ -211,21 +245,31 @@ class HabitNameInput(ui.input):
         self.habit = habit
         self.validation = self._validate
         self.props("dense hide-bottom-space")
-        self.on("blur", self._async_task)
+        self.on("blur", self._on_blur)
+        self.on("keydown.enter", self._on_keydown_enter)
 
-    async def _async_task(self):
-        name, tags = self.decode_name(self.value)
+    async def _save(self, value: str):
+        name, tags = self.decode_name(value)
         self.habit.name = name
-        logger.info(f"Habit Name changed to {name}")
         self.habit.tags = tags
+        logger.info(f"Habit Name changed to {name}")
         logger.info(f"Habit Tags changed to {tags}")
-
         self.value = self.encode_name(name, tags)
+
+    async def _on_keydown_enter(self):
+        await self._save(self.value)
+        ui.notify("Habit name saved")
+
+    async def _on_blur(self):
+        await self._save(self.value)
+
+    async def _on_change(self, e: events.ValueChangeEventArguments):
+        await self._save(e.value)
 
     def _validate(self, value: str) -> Optional[str]:
         if not value:
             return "Name is required"
-        if len(value) > 30:
+        if len(value) > 50:
             return "Too long"
 
     @staticmethod
@@ -557,10 +601,34 @@ class HabitTotalBadge(ui.badge):
 
 
 class IndexBadge(HabitTotalBadge):
-    def __init__(self, habit: Habit) -> None:
+    def __init__(self, today: datetime.date, habit: Habit) -> None:
         super().__init__(habit)
         self.props("color=grey-9 rounded transparent")
         self.style("font-size: 80%; font-weight: 500")
+
+        # Accessibility
+        ticked_days = habit.ticked_days
+        self.props(
+            f' tabindex="0" '
+            f'aria-label="total completion: {len(ticked_days)};'
+            f'{index_badge_alternative_text(today, habit)}"'
+        )
+
+
+class HabitTag(ui.chip):
+    def __init__(self, tag_name: str) -> None:
+        super().__init__(
+            text=tag_name,
+            color="oklch(0.3 0 0)",
+            text_color="oklch(0.85 0 0)",
+            selected=tag_name in TagManager.get_all(),
+        )
+
+        # https://tailwindcss.com/docs/colors
+        self.props("dense")
+        self.style("font-size: 80%; font-weight: 500")
+        self.style("padding: 8px 9px")
+        self.style("margin: 0px 2px")
 
 
 def habit_notes(records: List[CheckedRecord], limit: int = 10):
@@ -579,7 +647,7 @@ class TagManager:
     @staticmethod
     def get_all() -> set[str]:
         try:
-            return set(app.storage.client.get("index_tags_filter", []))
+            return set(app.storage.user.get("index_tags_filter", []))
         except Exception as e:
             logger.error(f"Failed to get tags: {e}")
             return set()
@@ -587,11 +655,11 @@ class TagManager:
     @staticmethod
     def add(tag: str) -> None:
         if settings.TAG_SELECTION_MODE == TagSelectionMode.SINGLE:
-            app.storage.client["index_tags_filter"] = [tag]
+            app.storage.user["index_tags_filter"] = [tag]
         else:
             tags = set(TagManager.get_all())
             tags.add(tag)
-            app.storage.client["index_tags_filter"] = list(tags)
+            app.storage.user["index_tags_filter"] = list(tags)
 
     @staticmethod
     def remove(tag: str) -> None:
@@ -600,40 +668,80 @@ class TagManager:
             logger.warning(f"Tag {tag} not found")
 
         tags.remove(tag)
-        app.storage.client["index_tags_filter"] = list(tags)
+        app.storage.user["index_tags_filter"] = list(tags)
 
 
-def tag_filters(active_habits: List[Habit], refresh: Callable):
-    all_tags = set(tag for habit in active_habits for tag in habit.tags)
-    all_tags = sorted(all_tags)
+def get_all_tags(habits: list[Habit]) -> list[str]:
+    result = []
+    for habit in habits:
+        for tag in habit.tags:
+            if tag not in result:
+                result.append(tag)
+    return result
 
-    if all_tags:
-        with ui.row().classes("gap-0.5 justify-right w-80"):
-            for tag_name in all_tags:
-                TagChip(tag_name, refresh=refresh)
+
+def tag_filter_component(active_habits: list[Habit], refresh: Callable):
+    all_tags = get_all_tags(active_habits)
+    if not all_tags:
+        return
+
+    # display components
+    with ui.row().classes("gap-0.5 justify-right w-80"):
+        for tag_name in all_tags:
+            TagChip(tag_name, refresh=refresh)
+        TagChip("Others", refresh=refresh)
+
+
+def habits_by_tags(active_habits: list[Habit]) -> dict[str, list[Habit]]:
+    all_tags = get_all_tags(active_habits)
+    if not all_tags:
+        return {"": active_habits}
+
+    all_tags.append("Others")
+
+    habits = OrderedDict()
+    # with tags
+    for habit in active_habits:
+        for tag in habit.tags:
+            habits.setdefault(tag, []).append(habit)
+    # without tags
+    habits["Others"] = [h for h in active_habits if not h.tags]
+
+    selected_tags = TagManager.get_all() & set(all_tags)
+    if selected_tags:
+        habits = OrderedDict(
+            (key, value) for key, value in habits.items() if key in selected_tags
+        )
+
+    return habits
 
 
 class TagChip(ui.chip):
-    def __init__(self, tag_name: str, refresh: Callable) -> None:
+    def __init__(
+        self, tag_name: str, refresh: Callable | None = None, selectable=True
+    ) -> None:
         super().__init__(
             text=tag_name,
-            color="oklch(0.3 0 0)",
-            text_color="oklch(0.7 0 0)",
-            selectable=True,
+            color="oklch(0.27 0 0)",
+            text_color="oklch(0.9 0 0)",
+            selectable=selectable,
             selected=tag_name in TagManager.get_all(),
         )
 
         # https://tailwindcss.com/docs/colors
         self.props("dense")
-        self.style("font-size: 0.8em; font-weight: 450; padding: 0.5rem 0.6rem;")
+        self.style("font-size: 80%; font-weight: 500")
+        self.style("padding: 8px 9px")
+        self.style("margin: 0px 2px")
 
         self.on_click(self._async_task)
         self.refresh = refresh
 
-    async def _async_task(self):
+    async def _async_task(self: Self):
         if self.selected:
             TagManager.add(self.text)
         else:
             TagManager.remove(self.text)
 
-        self.refresh()
+        if self.refresh:
+            self.refresh()

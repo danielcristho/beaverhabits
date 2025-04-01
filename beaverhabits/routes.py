@@ -4,9 +4,12 @@ from fastapi import Depends, FastAPI, HTTPException, Request, status
 from fastapi.responses import RedirectResponse
 from nicegui import app, ui
 
+from beaverhabits.frontend import javascript, paddle_page
 from beaverhabits.frontend.import_page import import_ui_page
 from beaverhabits.frontend.layout import custom_header, redirect
 from beaverhabits.frontend.order_page import order_page_ui
+from beaverhabits.frontend.paddle_page import PRIVACY, TERMS
+from beaverhabits.frontend.pricing_page import landing_page
 
 from . import const, views
 from .app.auth import (
@@ -21,6 +24,7 @@ from .frontend.add_page import add_page_ui
 from .frontend.cal_heatmap_page import heatmap_page
 from .frontend.habit_page import habit_page_ui
 from .frontend.index_page import index_page_ui
+from .logging import logger
 from .storage.meta import GUI_ROOT_PATH
 from .utils import dummy_days, get_user_today_date
 
@@ -138,6 +142,14 @@ async def login_page() -> Optional[RedirectResponse]:
         return RedirectResponse(GUI_ROOT_PATH)
 
     async def try_login():
+        if not email.value:
+            ui.notify("Email is required", color="negative")
+            return
+        if not password.value:
+            ui.notify("Password is required", color="negative")
+            return
+
+        logger.info(f"Trying to login with {email.value}")
         user = await user_authenticate(email=email.value, password=password.value)
         token = user and await user_create_token(user)
         if token is not None:
@@ -145,6 +157,9 @@ async def login_page() -> Optional[RedirectResponse]:
             ui.navigate.to(app.storage.user.get("referrer_path", "/"))
         else:
             ui.notify("email or password wrong!", color="negative")
+
+    # Wait for the handshake before sending events to the server
+    await ui.context.client.connected(timeout=10)
 
     with ui.card().classes("absolute-center shadow-none w-96"):
         email = ui.input("email").on("keydown.enter", try_login)
@@ -159,9 +174,12 @@ async def login_page() -> Optional[RedirectResponse]:
 
         if not await get_user_count() >= settings.MAX_USER_COUNT > 0:
             ui.separator()
-            with ui.row():
+            with ui.row().classes("gap-2"):
                 ui.label("New around here?").classes("text-sm")
                 ui.link("Create account", target="/register").classes("text-sm")
+                if settings.CLOUD:
+                    ui.label("|")
+                    ui.link("Pricing", target="/pricing").classes("text-sm")
 
 
 @ui.page("/register")
@@ -198,6 +216,21 @@ async def register_page():
             ui.link("Log in", target="/login")
 
 
+@ui.page("/pricing")
+async def pricing_page():
+    await landing_page()
+
+
+@ui.page("/terms")
+def terms_page():
+    paddle_page.markdown(TERMS)
+
+
+@ui.page("/privacy")
+def privacy_page():
+    paddle_page.markdown(PRIVACY)
+
+
 def init_gui_routes(fastapi_app: FastAPI):
     def handle_exception(exception: Exception):
         if isinstance(exception, HTTPException):
@@ -225,7 +258,16 @@ def init_gui_routes(fastapi_app: FastAPI):
 
         return response
 
-    app.add_static_files("/statics", "statics")
+    @app.middleware("http")
+    async def StaticFilesCacheMiddleware(request: Request, call_next):
+        response = await call_next(request)
+
+        path = request.url.path
+        if path.startswith("/_nicegui/"):
+            response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+        return response
+
+    app.add_static_files("/statics", "statics", max_cache_age=2628000)
     app.on_exception(handle_exception)
     ui.run_with(
         fastapi_app,

@@ -1,4 +1,4 @@
-FROM python:3.12-slim AS python-base
+FROM python:3.13-slim AS python-base
 ENV UV_COMPILE_BYTECODE=1 \
     \
     PYSETUP_PATH="/opt/pysetup" \
@@ -24,11 +24,12 @@ COPY uv.lock pyproject.toml ./
 RUN uv sync --frozen --no-install-project --no-dev -v
 
 # [Experimental] Remove unused nicegui libs
-ENV NICEGUI_LIB_PATH="$VENV_PATH/lib/python3.12/site-packages/nicegui/elements/lib"
-RUN rm -rf "$NICEGUI_LIB_PATH/mermaid/"
-RUN rm -rf "$NICEGUI_LIB_PATH/plotly/"
-RUN rm -rf "$NICEGUI_LIB_PATH/vanilla-jsoneditor/"
-
+ENV NICEGUI_LIB_PATH="$VENV_PATH/lib/python*/site-packages/nicegui/elements/lib"
+RUN for path in $(ls -d $NICEGUI_LIB_PATH); do \
+    rm -rf "$path/mermaid/" && \
+    rm -rf "$path/plotly/" && \
+    rm -rf "$path/vanilla-jsoneditor/"; \
+done
 
 FROM python-base AS production
 EXPOSE 8080

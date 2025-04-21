@@ -29,12 +29,18 @@ CALENDAR_CSS = """
 """
 EXPANSION_CSS = """
 .q-item__section--side {
-  min-width: 0 !important;
+    min-width: 0 !important;
 }
 """
 
 HIDE_TIMELINE_TITLE = """\
 .q-timeline__title {
-  display: none;
+    display: none;
+}
+"""
+
+MARKDOWN_CSS = """
+.q-timeline .q-timeline__content {
+    white-space: break-spaces;
 }
 """

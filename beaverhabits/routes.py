@@ -4,23 +4,22 @@ from fastapi import Depends, FastAPI, HTTPException, Request, status
 from fastapi.responses import RedirectResponse
 from nicegui import app, ui
 
-from beaverhabits.frontend import javascript, paddle_page
+from beaverhabits.frontend import paddle_page
+from beaverhabits.frontend.admin import admin_page
 from beaverhabits.frontend.import_page import import_ui_page
 from beaverhabits.frontend.layout import custom_header, redirect
 from beaverhabits.frontend.order_page import order_page_ui
-from beaverhabits.frontend.paddle_page import PRIVACY, TERMS
-from beaverhabits.frontend.pricing_page import landing_page
 
 from . import const, views
 from .app.auth import (
     user_authenticate,
-    user_create_token,
 )
 from .app.crud import get_user_count
 from .app.db import User
-from .app.dependencies import current_active_user
+from .app.dependencies import current_active_user, current_admin_user
 from .configs import settings
 from .frontend.add_page import add_page_ui
+from .frontend.export_page import export_page
 from .frontend.habit_page import habit_page_ui
 from .frontend.index_page import index_page_ui
 from .frontend.streaks import heatmap_page
@@ -127,7 +126,7 @@ async def gui_export(user: User = Depends(current_active_user)) -> None:
     if not habit_list:
         ui.notify("No habits to export", color="negative")
         return
-    await views.export_user_habit_list(habit_list, user.email)
+    await export_page(habit_list, user)
 
 
 @ui.page("/gui/import")
@@ -151,15 +150,18 @@ async def login_page() -> Optional[RedirectResponse]:
 
         logger.info(f"Trying to login with {email.value}")
         user = await user_authenticate(email=email.value, password=password.value)
-        token = user and await user_create_token(user)
-        if token is not None:
-            app.storage.user.update({"auth_token": token})
-            ui.navigate.to(app.storage.user.get("referrer_path", "/"))
+        if user:
+            await views.login_user(user)
+            ui.navigate.to(app.storage.user.get("referrer_path", "/gui"))
         else:
             ui.notify("email or password wrong!", color="negative")
 
-    # Wait for the handshake before sending events to the server
-    await ui.context.client.connected(timeout=10)
+    try:
+        # Wait for the handshake before sending events to the server
+        await ui.context.client.connected(timeout=5)
+    except TimeoutError:
+        # Ignore weak dependency
+        logger.warning("Client not connected, skipping login page")
 
     with ui.card().classes("absolute-center shadow-none w-96"):
         email = ui.input("email").on("keydown.enter", try_login)
@@ -177,7 +179,7 @@ async def login_page() -> Optional[RedirectResponse]:
             with ui.row().classes("gap-2"):
                 ui.label("New around here?").classes("text-sm")
                 ui.link("Create account", target="/register").classes("text-sm")
-                if settings.CLOUD:
+                if settings.ENABLE_PLAN:
                     ui.label("|")
                     ui.link("Pricing", target="/pricing").classes("text-sm")
 
@@ -196,7 +198,7 @@ async def register_page():
         except Exception as e:
             ui.notify(str(e), color="negative")
         else:
-            ui.navigate.to(app.storage.user.get("referrer_path", "/"))
+            ui.navigate.to(app.storage.user.get("referrer_path", "/gui"))
 
     await views.validate_max_user_count()
     with ui.card().classes("absolute-center shadow-none w-96"):
@@ -216,19 +218,30 @@ async def register_page():
             ui.link("Log in", target="/login")
 
 
-@ui.page("/pricing")
-async def pricing_page():
-    await landing_page()
+if settings.ENABLE_PLAN:
+    from beaverhabits.frontend.paddle_page import PRIVACY, TERMS
+    from beaverhabits.frontend.pricing_page import landing_page
 
+    @ui.page("/pricing")
+    async def pricing_page():
+        await landing_page()
 
-@ui.page("/terms")
-def terms_page():
-    paddle_page.markdown(TERMS)
+    @ui.page("/terms")
+    def terms_page():
+        paddle_page.markdown(TERMS)
 
+    @ui.page("/privacy")
+    def privacy_page():
+        paddle_page.markdown(PRIVACY)
 
-@ui.page("/privacy")
-def privacy_page():
-    paddle_page.markdown(PRIVACY)
+    @ui.page("/admin", include_in_schema=False)
+    async def admin(user: User = Depends(current_admin_user)):
+        await admin_page(user)
+
+    @ui.page("/admin/backup", include_in_schema=False)
+    async def manual_backup(user: User = Depends(current_admin_user)):
+        logger.info(f"Starting backup, triggered by {user.email}")
+        await views.backup_all_users()
 
 
 def init_gui_routes(fastapi_app: FastAPI):
@@ -239,15 +252,15 @@ def init_gui_routes(fastapi_app: FastAPI):
 
     @app.middleware("http")
     async def AuthMiddleware(request: Request, call_next):
-        auth_token = app.storage.user.get("auth_token")
-        if auth_token:
+        logger.debug(f"AuthMiddleware: {request.url.path}")
+        if token := app.storage.user.get("auth_token"):
             # Remove original authorization header
             request.scope["headers"] = [
                 e for e in request.scope["headers"] if e[0] != b"authorization"
             ]
             # add new authorization header
             request.scope["headers"].append(
-                (b"authorization", f"Bearer {auth_token}".encode())
+                (b"authorization", f"Bearer {token}".encode())
             )
 
         response = await call_next(request)
@@ -267,7 +280,8 @@ def init_gui_routes(fastapi_app: FastAPI):
             response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
         return response
 
-    app.add_static_files("/statics", "statics", max_cache_age=2628000)
+    oneyear = 365 * 24 * 60 * 60
+    app.add_static_files("/statics", "statics", max_cache_age=oneyear)
     app.on_exception(handle_exception)
     ui.run_with(
         fastapi_app,

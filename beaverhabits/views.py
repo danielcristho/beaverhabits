@@ -1,6 +1,7 @@
 import datetime
 import json
 import random
+from typing import Sequence
 
 from fastapi import HTTPException
 from nicegui import app, ui
@@ -9,22 +10,22 @@ from beaverhabits.app.auth import (
     user_check_token,
     user_create,
     user_create_token,
-    user_get_by_email,
 )
-from beaverhabits.app.crud import get_user_count
+from beaverhabits.app.crud import get_customer_list, get_user_count, get_user_list
 from beaverhabits.app.db import User
 from beaverhabits.configs import settings
+from beaverhabits.core.backup import backup_to_telegram
 from beaverhabits.logging import logger
 from beaverhabits.storage import get_user_dict_storage, session_storage
 from beaverhabits.storage.dict import DAY_MASK, DictHabitList
-from beaverhabits.storage.storage import Habit, HabitList
+from beaverhabits.storage.storage import Habit, HabitList, HabitListBuilder, HabitStatus
 from beaverhabits.utils import generate_short_hash
 
 user_storage = get_user_dict_storage()
 
 
 def dummy_habit_list(days: list[datetime.date]):
-    pick = lambda: random.randint(0, 5) == 0
+    pick = lambda: random.randint(0, 4) == 0
     items = [
         {
             "id": generate_short_hash(name),
@@ -67,14 +68,13 @@ def get_or_create_session_habit_list(days: list[datetime.date]) -> HabitList:
 
 
 async def get_user_habit_list(user: User) -> HabitList:
-    habit_list = await user_storage.get_user_habit_list(user)
-    if habit_list is None:
-        logger.warning(f"Failed to load habit list for user {user.email}")
+    try:
+        return await user_storage.get_user_habit_list(user)
+    except Exception:
         raise HTTPException(
             status_code=404,
             detail="The habit list data may be broken or missing, please contact the administrator.",
         )
-    return habit_list
 
 
 async def get_user_habit(user: User, habit_id: str) -> Habit:
@@ -96,7 +96,7 @@ async def get_or_create_user_habit_list(
         logger.warning(f"Failed to load habit list for user {user.email}")
 
     logger.info(f"Creating dummy habit list for user {user.email}")
-    await user_storage.save_user_habit_list(user, dummy_habit_list(days))
+    await user_storage.init_user_habit_list(user, dummy_habit_list(days))
 
     habit_list = await get_user_habit_list(user)
     if habit_list is None:
@@ -105,15 +105,17 @@ async def get_or_create_user_habit_list(
 
 
 async def export_user_habit_list(habit_list: HabitList, user_identify: str) -> None:
+    habits = HabitListBuilder(habit_list).status(HabitStatus.ACTIVE).build()
+
     # json to binary
     now = datetime.datetime.now()
     if isinstance(habit_list, DictHabitList):
-        data = {
+        export_d = {
             "user_email": user_identify,
             "exported_at": now.strftime("%Y-%m-%d %H:%M:%S"),
-            **habit_list.data,
+            "habits": [habit.to_dict() for habit in habits],
         }
-        binary_data = json.dumps(data).encode()
+        binary_data = json.dumps(export_d).encode()
         file_name = f"beaverhabits_{now.strftime('%Y_%m_%d')}.json"
         ui.download(binary_data, file_name)
     else:
@@ -147,3 +149,38 @@ async def is_gui_authenticated() -> bool:
         return True
 
     return False
+
+
+async def get_activated_users() -> Sequence[User]:
+    users = await get_user_list()
+    if not settings.ENABLE_PLAN:
+        return users
+
+    customers = await get_customer_list()
+    emails = [customer.email for customer in customers if customer.activated]
+    logger.debug(f"Activated users: {emails}")
+
+    return [user for user in users if user.email in emails]
+
+
+async def backup_all_users():
+    for user in await get_activated_users():
+        logger.info(f"Backing up habit list for user {user.email}...")
+        habit_list = await get_user_habit_list(user)
+        if habit_list is None:
+            logger.warning(f"Failed to load habit list for user {user.email}")
+            continue
+
+        backup = habit_list.backup
+        if not backup.telegram_bot_token or not backup.telegram_chat_id:
+            logger.warning(f"User {user.email} has no backup settings")
+            continue
+
+        try:
+            backup_to_telegram(
+                backup.telegram_bot_token, backup.telegram_chat_id, habit_list
+            )
+        except Exception as e:
+            logger.error(f"Failed to backup habit list for user {user.email}: {e}")
+        else:
+            logger.info(f"Successfully backed up habit list for user {user.email}")

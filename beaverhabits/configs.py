@@ -25,10 +25,19 @@ class TagSelectionMode(Enum):
 class Settings(BaseSettings):
     ENV: str = "dev"
     DEBUG: bool = False
-    SENTRY_DSN: str = ""
 
     # SaaS
-    CLOUD: bool = False
+    SENTRY_DSN: str = ""
+    ADMIN_EMAIL: str = ""
+    UMAMI_ANALYTICS_ID: str = ""
+    ENABLE_PLAN: bool = False
+    MAX_HABIT_COUNT: int = 5
+    PADDLE_SANDBOX: bool = True
+    PADDLE_CLIENT_SIDE_TOKEN: str = ""
+    PADDLE_API_TOKEN: str = ""
+    PADDLE_PRODUCT_ID: str = ""
+    PADDLE_PRICE_ID: str = ""
+    PADDLE_CALLBACK_KEY: str = ""
 
     # NiceGUI
     NICEGUI_STORAGE_SECRET: str = "dev"
@@ -40,7 +49,7 @@ class Settings(BaseSettings):
     DATABASE_URL: str = f"sqlite+aiosqlite:///./{USER_DATA_FOLDER}/habits.db"
     MAX_USER_COUNT: int = -1
     JWT_SECRET: str = "SECRET"
-    JWT_LIFETIME_SECONDS: int = 60 * 60 * 24 * 30
+    JWT_LIFETIME_SECONDS: int = 0
 
     # Auth
     TRUSTED_EMAIL_HEADER: str = ""
@@ -57,7 +66,9 @@ class Settings(BaseSettings):
     INDEX_HABIT_DATE_COLUMNS: int = 5
     INDEX_HABIT_DATE_REVERSE: bool = False
 
-    UMAMI_ANALYTICS_ID: str = ''
+    # Backup inverval(in seconds), default is oneday
+    ENABLE_DAILY_BACKUP: bool = False
+    DAILY_BACKUP_INTERVAL: int = 60 * 60 * 24
 
     def is_dev(self):
         return self.ENV == "dev"

@@ -1,40 +1,42 @@
 import asyncio
 from contextlib import asynccontextmanager
 
-from pydantic import BaseModel
-import sentry_sdk
 from fastapi import FastAPI, status
 from nicegui import ui
+from pydantic import BaseModel
 
 from beaverhabits.api import init_api_routes
-from beaverhabits.app import crud
-
-from .app.app import init_auth_routes
-from .app.db import create_db_and_tables
-from .configs import settings
-from .logging import logger
-from .routes import init_gui_routes
+from beaverhabits.app.app import init_auth_routes
+from beaverhabits.app.db import create_db_and_tables
+from beaverhabits.configs import settings
+from beaverhabits.logging import logger
+from beaverhabits.routes import init_gui_routes
+from beaverhabits.scheduler import daily_backup_task
 
 logger.info("Starting BeaverHabits...")
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    logger.info("Creating database and tables")
+    # Enable warning msg
+    if settings.DEBUG:
+        logger.info("Debug mode enabled")
+        loop = asyncio.get_running_loop()
+        loop.set_debug(True)
+        loop.slow_callback_duration = 0.01
+
+    # Create new database and tables if they don't exist
     await create_db_and_tables()
-    logger.info("Database and tables created")
+
+    # Start scheduler
+    if settings.ENABLE_DAILY_BACKUP:
+        loop = asyncio.get_event_loop()
+        loop.create_task(daily_backup_task())
+
     yield
 
 
 app = FastAPI(lifespan=lifespan)
-
-if settings.is_dev():
-
-    @app.on_event("startup")
-    def startup():
-        loop = asyncio.get_running_loop()
-        loop.set_debug(True)
-        loop.slow_callback_duration = 0.01
 
 
 class HealthCheck(BaseModel):
@@ -55,21 +57,27 @@ def read_root():
     return HealthCheck(status="OK")
 
 
-@app.get("/users/count", include_in_schema=False)
-async def user_count():
-    return {"count": await crud.get_user_count()}
-
-
 # auth
 init_auth_routes(app)
 init_api_routes(app)
+if settings.ENABLE_PLAN:
+    from beaverhabits.plan.paddle import init_paddle_routes
+
+    init_paddle_routes(app)
 init_gui_routes(app)
 
 
 # sentry
 if settings.SENTRY_DSN:
+    import sentry_sdk
+
     logger.info("Setting up Sentry...")
-    sentry_sdk.init(settings.SENTRY_DSN)
+    sentry_sdk.init(
+        settings.SENTRY_DSN,
+        traces_sample_rate=1.0,
+        profile_session_sample_rate=1.0,
+        profile_lifecycle="trace",
+    )
 
 
 if settings.DEBUG:
@@ -111,6 +119,7 @@ if settings.DEBUG:
 
     monitor = MemoryMonitor()
     ui.timer(5.0, monitor.print_stats)
+
 
 if __name__ == "__main__":
     print(

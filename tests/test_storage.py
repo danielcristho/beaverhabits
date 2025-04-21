@@ -1,3 +1,5 @@
+import uuid
+
 import pytest
 from nicegui import ui
 from nicegui.testing import Screen
@@ -8,7 +10,7 @@ from beaverhabits.app.db import create_db_and_tables
 from beaverhabits.configs import StorageType, settings
 from beaverhabits.utils import dummy_days
 
-EMAIL = "test@test.com"
+EMAIL = f"{uuid.uuid1()}@test.com"
 PASSWORD = "test"
 
 
@@ -16,7 +18,7 @@ async def get_or_create_user():
     await create_db_and_tables()
     user = await user_authenticate(email=EMAIL, password=PASSWORD)
     if not user:
-        user = await user_create(email="test@test.com", password="test")
+        user = await user_create(email=EMAIL, password=PASSWORD)
     return user
 
 
@@ -42,6 +44,9 @@ async def test_user_db(screen: Screen):
         habit_list = await views.get_or_create_user_habit_list(user, days)
         assert habit_list is not None
 
+        habit_list = await views.get_user_habit_list(user)
+        assert habit_list is not None
+
     screen.open("/", timeout=60)
 
 
@@ -54,6 +59,9 @@ async def test_user_disk(screen: Screen):
     async def page():
         days = await dummy_days(5)
         habit_list = await views.get_or_create_user_habit_list(user, days)
+        assert habit_list is not None
+
+        habit_list = await views.get_user_habit_list(user)
         assert habit_list is not None
 
     screen.open("/", timeout=60)

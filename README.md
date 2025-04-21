@@ -3,7 +3,7 @@
 ![GitHub Release](https://img.shields.io/github/v/release/daya0576/beaverhabits)
 ![Docker Pulls](https://img.shields.io/docker/pulls/daya0576/beaverhabits)
 ![GitHub Actions Workflow Status](https://img.shields.io/github/actions/workflow/status/daya0576/beaverhabits/fly.yml)
-![Uptime Robot ratio (30 days)](https://img.shields.io/uptimerobot/ratio/m787647728-b1a273391c2ad5c526b1c605)
+![Uptime Robot ratio (30 days)](https://img.shields.io/uptimerobot/ratio/m796940918-864324d021343c6ace874b58)
 
 A self-hosted habit tracking app without "Goals"
 
@@ -41,7 +41,7 @@ Simply search for "Beaver Habit Tracker" in the Community Apps store!
 docker run -d --name beaverhabits \
   -u $(id -u):$(id -g) \
   -e HABITS_STORAGE=USER_DISK \
-  -v /path/to/host/directory:/app/.user/ \
+  -v ./beaver/:/app/.user/ \
   -p 8080:8080 \
   daya0576/beaverhabits:latest
 ```
@@ -59,7 +59,7 @@ services:
       - INDEX_HABIT_DATE_COLUMNS=5 # Customize the date columns for the index page.
       - ENABLE_IOS_STANDALONE=true
     volumes:
-      - /path/to/beaver/habits:/app/.user/ # Change directory to match your docker file scheme.
+      - ./beaver/:/app/.user/ # Change directory to match your docker file scheme.
     ports:
       - 8080:8080
     restart: unless-stopped

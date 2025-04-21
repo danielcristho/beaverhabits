@@ -7,8 +7,9 @@ from beaverhabits.frontend.components import (
     CalendarHeatmap,
     habit_heat_map,
     habit_history,
+    habit_notes,
 )
-from beaverhabits.frontend.css import CHECK_BOX_CSS
+from beaverhabits.frontend.css import CHECK_BOX_CSS, MARKDOWN_CSS
 from beaverhabits.frontend.layout import layout
 from beaverhabits.storage.storage import Habit
 
@@ -40,14 +41,22 @@ def streaks(today: datetime.date, habit: Habit):
 def history(today: datetime.date, habit: Habit):
     with compat_card():
         ui.label("History").classes("text-lg")
-        habit_history(today, habit.ticked_days, total_months=48)
+        habit_history(today, habit, total_months=48)
+
+
+def notes(habit: Habit, limit: int = 100):
+    with compat_card():
+        ui.label("Notes").classes("text-lg")
+        habit_notes(habit, limit=limit)
 
 
 def heatmap_page(today: datetime.date, habit: Habit):
     ui.add_css(CHECK_BOX_CSS)
+    ui.add_css(MARKDOWN_CSS)
 
     # Header
     with layout(title=habit.name):
         # Main body
         history(today, habit)
         streaks(today, habit)
+        notes(habit, limit=100)

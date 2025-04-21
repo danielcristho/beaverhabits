@@ -25,9 +25,8 @@ class FilePersistentDict(observables.ObservableDict):
         self.indent = indent
         try:
             data = json.loads(filepath.read_text(encoding)) if filepath.exists() else {}
-        except Exception:
-            logger.warning(f"Could not load storage file {filepath}")
-            data = {}
+        except Exception as e:
+            raise ValueError(f"Could not load storage file {filepath}", e)
         super().__init__(data, on_change=self.backup)
 
     def backup(self) -> None:
@@ -39,7 +38,11 @@ class FilePersistentDict(observables.ObservableDict):
 
         async def backup() -> None:
             async with aiofiles.open(self.filepath, "w", encoding=self.encoding) as f:
-                await f.write(json.dumps(self, indent=self.indent))
+                logger.debug(f"Backing up {self.filepath}")
+                if not self:
+                    raise ValueError("Empty content to write!!!")
+                content = json.dumps(self, indent=self.indent)
+                await f.write(content)
 
         if core.loop:
             background_tasks.create_lazy(backup(), name=self.filepath.stem)
@@ -63,26 +66,19 @@ class UserDiskStorage(UserStorage[DictHabitList]):
 
         return d
 
-    async def get_user_habit_list(self, user: User) -> Optional[DictHabitList]:
+    async def get_user_habit_list(self, user: User) -> DictHabitList:
         d = self._get_persistent_dict(user).get(KEY_NAME)
         if not d:
-            return None
+            raise Exception(
+                f"User {user.email} does not have a habit list, cannot load it."
+            )
         return DictHabitList(d)
 
-    async def save_user_habit_list(self, user: User, habit_list: DictHabitList) -> None:
+    async def init_user_habit_list(self, user: User, habit_list: DictHabitList) -> None:
         d = self._get_persistent_dict(user)
         if d.get(KEY_NAME):
-            logger.warning(
-                f"Failed to save habit list for user {user.email} because it already exists"
+            raise Exception(
+                f"User {user.email} already has a habit list, cannot save it."
             )
-            return
+
         d[KEY_NAME] = habit_list.data
-
-    async def merge_user_habit_list(
-        self, user: User, other: DictHabitList
-    ) -> DictHabitList:
-        current = await self.get_user_habit_list(user)
-        if current is None:
-            return other
-
-        return await current.merge(other)

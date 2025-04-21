@@ -1,8 +1,13 @@
 import datetime
-from enum import Enum
-from typing import List, Optional, Protocol, Self, Set
+import re
+from dataclasses import asdict, dataclass
+from enum import Enum, auto
+from typing import List, Literal, Optional, Protocol, Self
+
+from dataclasses_json import DataClassJsonMixin, dataclass_json
 
 from beaverhabits.app.db import User
+from beaverhabits.utils import PERIOD_TYPES, D
 
 
 class CheckedRecord(Protocol):
@@ -37,6 +42,54 @@ class HabitStatus(Enum):
         return tuple(cls.__members__.values())
 
 
+@dataclass
+class HabitFrequency:
+    PATTERN = re.compile(r"(\d+)\/(\d+)([DWMY])")
+
+    # Moving window
+    period_type: Literal["D", "W", "M", "Y"]
+    period_count: int
+
+    # Target frequency
+    target_count: int
+
+    @classmethod
+    def from_dict(cls, data: dict) -> Self:
+        return cls(
+            period_type=data["period_type"],
+            period_count=data["period_count"],
+            target_count=data["target_count"],
+        )
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+    def to_str(self) -> str:
+        return f"{self.target_count}/{self.period_count}{self.period_type}"
+
+    @classmethod
+    def from_str(cls, value: str) -> Self:
+        # Parse from pattern
+        m = re.match(cls.PATTERN, value)
+
+        # Extract the values
+        if not m:
+            raise ValueError(f"Invalid pattern: {value}")
+
+        t_c, p_c, p_t = m.groups()[1:]
+        if p_t not in PERIOD_TYPES:
+            raise ValueError(f"Invalid period type: {p_t}")
+        if not p_c.isdigit() or not t_c.isdigit():
+            raise ValueError(f"Invalid period count: {p_c} or target count: {t_c}")
+        t_c, p_c = int(t_c), int(p_c)
+
+        # Create the object
+        return cls(p_t, p_c, t_c)
+
+
+EVERY_DAY = HabitFrequency(D, 1, 1)
+
+
 class Habit[R: CheckedRecord](Protocol):
     @property
     def id(self) -> str | int: ...
@@ -69,7 +122,17 @@ class Habit[R: CheckedRecord](Protocol):
     def status(self, value: HabitStatus) -> None: ...
 
     @property
+    def period(self) -> HabitFrequency | None: ...
+
+    @period.setter
+    def period(self, value: HabitFrequency | None) -> None: ...
+
+    @property
     def ticked_days(self) -> list[datetime.date]: ...
+
+    def ticked_count(
+        self, start: datetime.date | None = None, end: datetime.date | None = None
+    ) -> int: ...
 
     @property
     def ticked_data(self) -> dict[datetime.date, R]: ...
@@ -81,10 +144,24 @@ class Habit[R: CheckedRecord](Protocol):
         self, day: datetime.date, done: bool, text: str | None = None
     ) -> CheckedRecord: ...
 
+    def to_dict(self) -> dict: ...
+
     def __str__(self):
         return self.name
 
     __repr__ = __str__
+
+
+class HabitOrder(Enum):
+    NAME = auto()
+    CATEGORY = auto()
+    MANUALLY = auto()
+
+
+@dataclass
+class Backup(DataClassJsonMixin):
+    telegram_bot_token: str | None = None
+    telegram_chat_id: str | None = None
 
 
 class HabitList[H: Habit](Protocol):
@@ -97,6 +174,18 @@ class HabitList[H: Habit](Protocol):
 
     @order.setter
     def order(self, value: List[str]) -> None: ...
+
+    @property
+    def order_by(self) -> HabitOrder: ...
+
+    @order_by.setter
+    def order_by(self, value: HabitOrder) -> None: ...
+
+    @property
+    def backup(self) -> Backup: ...
+
+    @backup.setter
+    def backup(self, value: Backup) -> None: ...
 
     async def add(self, name: str) -> None: ...
 
@@ -112,11 +201,9 @@ class SessionStorage[L: HabitList](Protocol):
 
 
 class UserStorage[L: HabitList](Protocol):
-    async def get_user_habit_list(self, user: User) -> Optional[L]: ...
+    async def get_user_habit_list(self, user: User) -> L: ...
 
-    async def save_user_habit_list(self, user: User, habit_list: L) -> None: ...
-
-    async def merge_user_habit_list(self, user: User, other: L) -> L: ...
+    async def init_user_habit_list(self, user: User, habit_list: L) -> None: ...
 
 
 class HabitListBuilder:
@@ -126,6 +213,7 @@ class HabitListBuilder:
             HabitStatus.ACTIVE,
             HabitStatus.ARCHIVED,
         )
+        self.order_by = HabitOrder.MANUALLY
 
     def status(self, *status: HabitStatus) -> Self:
         self.status_list = status
@@ -136,7 +224,11 @@ class HabitListBuilder:
         habits = [x for x in self.habit_list.habits if x.status in self.status_list]
 
         # sort by order
-        if o := self.habit_list.order:
+        if self.habit_list.order_by == HabitOrder.NAME:
+            habits.sort(key=lambda x: x.name.lower())
+        elif self.habit_list.order_by == HabitOrder.CATEGORY:
+            habits.sort(key=lambda x: x.tags[0].lower() if x.tags else "")
+        elif o := self.habit_list.order:
             habits.sort(
                 key=lambda x: (o.index(str(x.id)) if str(x.id) in o else float("inf"))
             )

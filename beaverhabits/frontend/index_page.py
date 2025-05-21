@@ -5,7 +5,6 @@ from typing import List
 from nicegui import ui
 
 from beaverhabits.configs import settings
-from beaverhabits.core import completions
 from beaverhabits.core.completions import get_habit_date_completion
 from beaverhabits.frontend import javascript
 from beaverhabits.frontend.components import (
@@ -59,7 +58,6 @@ def day_headers(days: list[datetime.date]):
         yield "#"
 
 
-@ui.refreshable
 def habit_row(habit: Habit, tag: str, days: list[datetime.date]):
     # truncate name
     root_path = get_root_path()
@@ -72,7 +70,9 @@ def habit_row(habit: Habit, tag: str, days: list[datetime.date]):
     status_map = get_habit_date_completion(habit, min(days), today)
     for day in days:
         status = status_map.get(day, [])
-        checkbox = HabitCheckBox(status, habit, today, day, refresh=habit_row.refresh)
+        checkbox = HabitCheckBox(
+            status, habit, today, day, refresh=habit_list_ui.refresh
+        )
         checkbox.classes(RIGHT_CLASSES)
 
     if settings.INDEX_SHOW_HABIT_COUNT:
@@ -83,9 +83,6 @@ def habit_row(habit: Habit, tag: str, days: list[datetime.date]):
 def habit_list_ui(days: list[datetime.date], active_habits: List[Habit]):
     # Total cloumn for each row
     columns = NAME_COLS + len(days) * DATE_COLS + COUNT_BADGE_COLS
-
-    # Category
-    tag_filter_component(active_habits, refresh=habit_list_ui.refresh)
 
     with ui.column().classes("gap-1.5"):
         # Date Headers
@@ -120,6 +117,8 @@ def index_page_ui(days: list[datetime.date], habits: HabitList):
         days = list(reversed(days))
 
     with layout(habit_list=habits):
+        # Category
+        tag_filter_component(active_habits, refresh=habit_list_ui.refresh)
         habit_list_ui(days, active_habits)
 
     # Prevent long press context menu for svg image elements

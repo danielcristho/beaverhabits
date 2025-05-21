@@ -86,6 +86,15 @@ class HabitFrequency:
         # Create the object
         return cls(p_t, p_c, t_c)
 
+    def __eq__(self, other):
+        if isinstance(other, HabitFrequency):
+            return (
+                self.period_type == other.period_type
+                and self.period_count == other.period_count
+                and self.target_count == other.target_count
+            )
+        return False
+
 
 EVERY_DAY = HabitFrequency(D, 1, 1)
 
@@ -187,7 +196,7 @@ class HabitList[H: Habit](Protocol):
     @backup.setter
     def backup(self, value: Backup) -> None: ...
 
-    async def add(self, name: str) -> None: ...
+    async def add(self, name: str) -> str: ...
 
     async def remove(self, item: H) -> None: ...
 

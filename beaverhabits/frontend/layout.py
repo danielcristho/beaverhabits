@@ -10,20 +10,19 @@ from beaverhabits.frontend.components import (
     menu_header,
     menu_icon_button,
     menu_icon_item,
-    open_tab,
     redirect,
 )
 from beaverhabits.frontend.menu import add_menu, sort_menu
-from beaverhabits.logging import logger
 from beaverhabits.storage.meta import (
-    get_page_title,
     get_root_path,
     is_page_demo,
+    page_path,
+    page_title,
 )
 from beaverhabits.storage.storage import Habit, HabitList
 
 
-def custom_header():
+def pwa_headers():
     # Apple touch icon
     ui.add_head_html(
         '<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">'
@@ -45,14 +44,21 @@ def custom_header():
     if settings.ENABLE_IOS_STANDALONE:
         ui.add_head_html('<meta name="mobile-web-app-capable" content="yes">')
 
+
+def custom_headers():
     # SEO meta tags
     ui.add_head_html(
         '<meta name="description" content="A self-hosted habit tracking app without "Goals"">'
     )
+
+    # Analytics
     if settings.UMAMI_ANALYTICS_ID:
         ui.add_head_html(
             f'<script defer src="https://cloud.umami.is/script.js" data-website-id="{settings.UMAMI_ANALYTICS_ID}"></script>'
         )
+
+    # Prevent white flash on page load
+    ui.add_css("body { background-color: #121212; color: white;  }")
 
 
 def separator():
@@ -60,44 +66,22 @@ def separator():
 
 
 @ui.refreshable
-def menu_component(habit: Habit | None = None, habit_list: HabitList | None = None):
+def menu_component():
     """Dropdown menu for the top-right corner of the page."""
-    edit_dialog = habit_edit_dialog(habit) if habit else ui.dialog()
-    path = context.client.page.path
-
     with ui.menu().props('role="menu"'):
-        # habit page
-        if habit:
-            edit = menu_icon_item("Edit", on_click=edit_dialog.open)
-            edit.props('aria-label="Edit habit"')
-            separator()
-            add_menu()
-            separator()
-        if habit_list:
-            sort_menu(habit_list) if "add" in path else add_menu()
-            separator()
+        add_menu()
+        separator()
 
         # Export & import
-        if habit_list:
-            menu_icon_item("Export", lambda: redirect("export"))
-            separator()
-            imp = menu_icon_item("Import", lambda: redirect("import"))
-            if is_page_demo():
-                imp.classes("disabled")
-            separator()
+        menu_icon_item("Export", lambda: redirect("export"))
+        separator()
+        imp = menu_icon_item("Import", lambda: redirect("import"))
+        if is_page_demo():
+            imp.classes("disabled")
+        separator()
 
         # Login & Logout
-        if is_page_demo():
-            menu_icon_item("Login", lambda: ui.navigate.to("/login"))
-        else:
-            menu_icon_item("Logout", lambda: user_logout() and ui.navigate.to("/login"))
-
-
-def pre_cache():
-    # lazy load echart: https://github.com/zauberzeug/nicegui/discussions/1452
-    # hash: nicegui.dependencies.compute_key
-    # ui.context.client.on_connect(javascript.load_cache)
-    ui.add_css("body { background-color: #121212; color: white;  }")
+        menu_icon_item("Logout", lambda: user_logout() and ui.navigate.to("/login"))
 
 
 @contextmanager
@@ -107,26 +91,27 @@ def layout(
     habit_list: HabitList | None = None,
 ):
     """Base layout for all pages."""
-    title = title or get_page_title()
-
-    with ui.column() as c:
+    # Center the content on small screens
+    with ui.column().classes("mx-auto mx-0"):
         # Standard headers
-        custom_header()
-        pre_cache()
+        custom_headers()
+        pwa_headers()
 
-        # Center the content on small screens
-        c.classes("mx-auto")
-        if not settings.ENABLE_DESKTOP_ALGIN_CENTER:
-            c.classes("sm:mx-0")
-
-        path = context.client.page.path
-        logger.info(f"Rendering page: {path}")
-        with ui.row().classes("min-w-full gap-x-1"):
-            menu_header(title, target=get_root_path())
+        # Layout wrapper
+        with ui.row().classes("w-full gap-x-1"):
+            title, target = title or page_title(), get_root_path()
+            menu_header(title, target=target)
             ui.space()
-            with menu_icon_button(icons.MENU) as menu:
-                menu_component(habit, habit_list)
-                # Accessibility
-                menu.props('aria-haspopup="true" aria-label="menu"')
+
+            if habit:
+                edit_dialog = habit_edit_dialog(habit)
+                edit_btn = menu_icon_button(icons.EDIT, tooltip="Edit habit")
+                edit_btn.on_click(edit_dialog.open)
+            elif habit_list and "add" in page_path():
+                with menu_icon_button(icons.SORT, tooltip="Sort"):
+                    sort_menu(habit_list)
+
+            with menu_icon_button(icons.MENU):
+                menu_component()
 
         yield

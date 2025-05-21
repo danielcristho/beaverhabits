@@ -2,11 +2,10 @@ import asyncio
 import calendar
 import datetime
 import os
-import uuid
 from collections import OrderedDict
-from copy import deepcopy
+from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import Callable, List, Optional, Self
+from typing import Callable, Optional, Self
 
 from dateutil.relativedelta import relativedelta
 from nicegui import app, events, ui
@@ -17,7 +16,7 @@ from beaverhabits.configs import TagSelectionMode, settings
 from beaverhabits.core.backup import backup_to_telegram
 from beaverhabits.core.completions import CStatus, get_habit_date_completion
 from beaverhabits.frontend import icons
-from beaverhabits.logging import logger
+from beaverhabits.logger import logger
 from beaverhabits.plan import plan
 from beaverhabits.storage.dict import DAY_MASK, MONTH_MASK
 from beaverhabits.storage.meta import get_root_path
@@ -44,7 +43,7 @@ from beaverhabits.utils import (
 
 strptime = datetime.datetime.strptime
 
-DAILY_NOTE_MAX_LENGTH = 300
+DAILY_NOTE_MAX_LENGTH = 1000
 CALENDAR_EVENT_MASK = "%Y/%m/%d"
 
 
@@ -56,9 +55,9 @@ def open_tab(x):
     ui.navigate.to(os.path.join(get_root_path(), x), new_tab=True)
 
 
-def link(text: str, target: str):
+def link(text: str, target: str, color: str = "text-white") -> ui.link:
     return ui.link(text, target=target).classes(
-        "dark:text-white no-underline hover:no-underline"
+        f"dark:{color} no-underline hover:no-underline"
     )
 
 
@@ -75,9 +74,14 @@ def menu_icon_button(
     icon_name: str, click: Optional[Callable] = None, tooltip: str | None = None
 ) -> Button:
     button = ui.button(icon=icon_name, color=None, on_click=click)
-    button.props("flat=true unelevated=true padding=xs backgroup=none")
+    button.props("flat unelevated padding=xs backgroup=none")
     if tooltip:
-        button = button.tooltip(tooltip)
+        button.tooltip(tooltip)
+        button.props(f'aria-label="{tooltip}"')
+    else:
+        # Accessibility
+        button.props('aria-haspopup="true" aria-label="menu"')
+
     return button
 
 
@@ -91,7 +95,7 @@ def habit_tick_dialog(record: CheckedRecord | None):
     text = record.text if record else ""
     with ui.dialog() as dialog, ui.card().props("flat") as card:
         dialog.props('backdrop-filter="blur(4px)"')
-        card.classes("w-5/6 max-w-120")
+        card.classes("w-[640px]")
 
         with ui.column().classes("gap-0 w-full"):
             t = ui.textarea(
@@ -158,7 +162,7 @@ class HabitCheckBox(ui.checkbox):
         self.today = today
         self.status = status
         value = CStatus.DONE in status
-        self.refresh = refresh
+        self.row_refresh = refresh
         super().__init__("", value=value)
         self._update_style(value)
 
@@ -175,14 +179,14 @@ class HabitCheckBox(ui.checkbox):
         # 2. Touch click: touchstart -> touchend -> mousemove -> mousedown -> mouseup -> click
         # 3. Touch move:  touchstart -> touchmove -> touchend
         self.on("mousedown", self._mouse_down_event)
-        self.on("touchstart", self._mouse_down_event)
+        self.on("touchstart.passive", self._mouse_down_event)
 
         # Event modifiers
         # 1. *Prevent* checkbox default behavior
         # 2. *Prevent* propagation of the event
         self.on("mouseup", self._mouse_up_event)
         self.on("touchend", self._mouse_up_event)
-        self.on("touchmove", self._mouse_move_event)
+        self.on("touchmove.passive", self._mouse_move_event, throttle=1)
         # self.on("mousemove", self._mouse_move_event)
 
         # Checklist: value change, scrolling
@@ -192,20 +196,22 @@ class HabitCheckBox(ui.checkbox):
 
     def _refresh(self):
         logger.debug(f"Refresh: {self.day}, {self.value}")
-        if not self.refresh:
+        if not self.row_refresh:
             return
         if not self.habit.period:
             return
+        if self.habit.period == EVERY_DAY:
+            return
 
-        # Do refresh the components
-        self.refresh()
+        # Do refresh the total row
+        self.row_refresh()
 
     async def _mouse_down_event(self, e):
         logger.info(f"Down event: {self.day}, {e.args.get('type')}")
         self.hold.clear()
         self.moving = False
         try:
-            async with asyncio.timeout(0.25):
+            async with asyncio.timeout(0.3):
                 await self.hold.wait()
         except asyncio.TimeoutError:
             # Long press diaglog
@@ -258,7 +264,7 @@ class HabitCheckBox(ui.checkbox):
 
         # icons, e.g. sym_o_notes
         checked, unchecked = icons.DONE, icons.CLOSE
-        if self.habit.period:
+        if self.habit.period and self.habit.period != EVERY_DAY:
             checked = icons.DONE_ALL
             if CStatus.PERIOD_DONE in self.status:
                 unchecked = icons.DONE
@@ -287,6 +293,7 @@ class HabitOrderCard(ui.card):
         self.on("mouseout", lambda: self.btn and self.btn.classes(remove="opacity-100"))
 
 
+
 class HabitNameInput(ui.input):
     def __init__(self, habit: Habit, label: str = "") -> None:
         super().__init__(value=self.encode_name(habit), label=label)
@@ -304,6 +311,7 @@ class HabitNameInput(ui.input):
     async def _on_blur(self):
         await self._save(self.value)
 
+    @plan.pro_required("Pro plan required to update category")
     async def _save(self, value: str):
         name, tags = self.decode_name(value)
         self.habit.name = name
@@ -831,11 +839,46 @@ def tag_filter_component(active_habits: list[Habit], refresh: Callable):
     if not all_tags:
         return
 
-    # display components
-    with ui.row().classes("gap-0.5 justify-right w-80"):
+    with ui.row().classes("gap-0.5 justify-right w-80 hidden") as row:
         for tag_name in all_tags:
             TagChip(tag_name, refresh=refresh)
         TagChip("Others", refresh=refresh)
+
+        row.classes("tag-filter")
+        ui.add_body_html(
+            """
+            <script>
+            document.addEventListener("DOMContentLoaded", function() {
+                const element = document.querySelector(".tag-filter");
+            
+                // scroll event
+                window.addEventListener('wheel', function(event) {
+                    if (window.scrollY === 0 && event.deltaY < -1) {
+                        element.classList.remove("hidden");
+                    }
+                    if (window.scrollY === 0 && event.deltaY > 1) {
+                        element.classList.add("hidden");
+                    }
+                }, { passive: true  });
+
+                // touch event
+                let startY;
+                window.addEventListener('touchstart', function(event) {
+                    startY = event.touches[0].clientY;
+                }, { passive: true  });
+                window.addEventListener('touchmove', function(event) {
+                    let currentY = event.touches[0].clientY;
+                    if (window.scrollY === 0 && currentY - startY < -1) {
+                        element.classList.add("hidden");
+                    }
+                    if (window.scrollY === 0 && currentY - startY > 1) {
+                        element.classList.remove("hidden");
+                    }
+                }, { passive: true  });
+            });
+            </script>
+        """
+        )
 
 
 def habits_by_tags(active_habits: list[Habit]) -> dict[str, list[Habit]]:
@@ -896,12 +939,14 @@ class TagChip(ui.chip):
 def number_input(value: int, label: str):
     return ui.input(value=str(value), label=label).props("dense").classes("w-8")
 
-def backup_input(label:str, value:str):
+
+def backup_input(label: str, value: str):
     backup_input = ui.input(label=label)
     backup_input.classes("w-full")
     if value:
         backup_input.value = value
     return backup_input
+
 
 def habit_backup_dialog(habit_list: HabitList) -> ui.dialog:
     @plan.pro_required("Pro plan required to use backup feature")
@@ -1012,3 +1057,54 @@ def habit_edit_dialog(habit: Habit) -> ui.dialog:
                 ui.button("Reset", on_click=reset).props("flat")
 
     return dialog
+
+
+def auth_header(text: str):
+    with ui.row():
+        ui.label(text).classes("text-3xl font-bold")
+
+
+def auth_redirect(text: str, target: str):
+    return link(text, target).classes("text-xs text-gray-950")
+
+
+def auth_forgot_password(email_input: ui.input, reset: Callable):
+    async def try_forgot_password():
+        email = email_input.value
+        if not email:
+            ui.notify("Email is required", color="negative")
+            return
+
+        spinner.classes(remove="hidden")
+        await reset(email)
+        spinner.classes("hidden")
+
+    forgot_entry = auth_redirect("Forgot password?", "#")
+    forgot_entry.on("click", try_forgot_password)
+    spinner = ui.spinner().classes("hidden")
+
+
+def auth_email(value: str | None = None):
+    email = ui.input("email").classes("w-full")
+    if value:
+        email.value = value
+    return email
+
+
+def auth_password(title: str = "Password", value: str | None = None):
+    password = ui.input("password", password=True, password_toggle_button=True)
+    password.classes("w-full")
+    if value:
+        password.value = value
+    if title:
+        password.label = title
+    return password
+
+
+@contextmanager
+def auth_card(title: str, func: Callable):
+    with ui.card().classes("absolute-center shadow-none w-80 sm:w-96"):
+        with ui.column().classes("w-full gap-4"):
+            auth_header(title)
+            yield
+            ui.button("Continue", on_click=func).props("dense").classes("w-full")

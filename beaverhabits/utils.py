@@ -1,17 +1,26 @@
 import datetime
+import gc
 import hashlib
+import os
+import smtplib
 import time
+import tracemalloc
+from collections import Counter
+from email.mime.text import MIMEText
 from functools import wraps
 from typing import Literal, TypeAlias
 
+import psutil
 import pytz
 from cachetools import TTLCache
 from dateutil.relativedelta import relativedelta
 from fastapi import HTTPException
 from nicegui import app, ui
+from psutil._common import bytes2human
 from starlette import status
 
-from beaverhabits.logging import logger
+from beaverhabits.configs import settings
+from beaverhabits.logger import logger
 
 WEEK_DAYS = 7
 TIME_ZONE_KEY = "timezone"
@@ -139,3 +148,115 @@ def timeit(threshold: float):
         return wrapper
 
     return decorator
+
+
+def send_email(subject: str, body: str, recipients: list[str]):
+    sender = settings.SMTP_EMAIL_USERNAME
+    password = settings.SMTP_EMAIL_PASSWORD
+
+    msg = MIMEText(body)
+    msg["Subject"] = subject
+    msg["From"] = sender
+    msg["To"] = ", ".join(recipients)
+
+    with smtplib.SMTP_SSL("smtp.gmail.com", 465) as smtp_server:
+        smtp_server.login(sender, password)
+        smtp_server.sendmail(sender, recipients, msg.as_string())
+
+
+class MemoryMonitor:
+
+    def __init__(self, source: str, diff_threshold: int = 0, total_threshold: int = 0):
+        self.source = source
+        self.last_mem: int = 0
+        self.obj_count: dict[str, int] = {}
+
+        self.diff_threshold: int = diff_threshold
+        self.total_threshold: int = total_threshold
+
+    def _key(self, obj: object) -> str:
+        try:
+            return f"{type(obj).__name__},{obj.__class__.__module__}"
+        except Exception as e:
+            logger.warning(f"Error getting key for object: {e}")
+            return f"{type(obj).__name__},<unknown>"
+
+    def print_stats(self) -> None:
+        gc.collect()
+
+        # print memory usage
+        memory = psutil.Process(os.getpid()).memory_info().rss
+        growth = memory - self.last_mem
+        print(f"{self.source} total memory: {bytes2human(memory)}", end=" ")
+        print(bytes2human(growth, r"%(value)+.1f%(symbol)s"), end=" ")
+
+        # print objects by types
+        counter: Counter = Counter()
+        for obj in gc.get_objects():
+            counter[self._key(obj)] += 1
+        for cls, count in counter.most_common():
+            prev_count = self.obj_count.get(cls, 0)
+            if (
+                abs(count - prev_count) > self.diff_threshold
+                and count > self.total_threshold
+            ):
+                print(f"{cls}={count} ({count - prev_count:+})", end=" ")
+        print()
+
+        self.obj_count = {cls: count for cls, count in counter.items() if count > 0}
+        self.last_mem = memory
+
+
+_SNAPSHOT = _RSS = None
+
+
+def print_memory_snapshot():
+    global _SNAPSHOT, _RSS
+
+    memory = psutil.Process(os.getpid()).memory_info().rss
+    current, peak = tracemalloc.get_traced_memory()
+    growth = 0
+    if _RSS is not None:
+        growth = memory - _RSS
+    else:
+        _RSS = memory
+
+    print(f"[DEBUG]Total memory: {bytes2human(memory)}", end=" ")
+    print(bytes2human(growth, r"%(value)+.1f%(symbol)s"), end=" ")
+    print(f"Current memory usage: {current / 1024**2:.4f} MB", end=" ")
+    print(f"Peak memory usage: {peak / 1024**2:.4f} MB", end=" ")
+    print()
+
+    new_snapshot = tracemalloc.take_snapshot()
+    new_snapshot = new_snapshot.filter_traces(
+        (
+            tracemalloc.Filter(False, "<unknown>"),
+            tracemalloc.Filter(False, "<frozen importlib._bootstrap_external>"),
+            tracemalloc.Filter(False, "<frozen importlib._bootstrap>"),
+            tracemalloc.Filter(False, tracemalloc.__file__),
+        )
+    )
+
+    # print top 10 memory usage with traceback
+    top_stats = new_snapshot.statistics("traceback")
+    for stat in top_stats[:10]:
+        print(f"[DEBUG Traceback]Top memory usage:", end=" ")
+        print("%s memory blocks: %.1f KiB" % (stat.count, stat.size / 1024))
+        for line in stat.traceback.format():
+            print("[DEBUG Traceback]", line)
+        print("[DEBUG Traceback]", "=" * 30)
+
+    # print top 10 diff memory usage
+    if _SNAPSHOT is not None:
+        diff = new_snapshot.compare_to(_SNAPSHOT, "lineno")
+        if diff:
+            print("[DEBUG Diff]Snapshot diff:", end=":")
+            for stat in diff[:10]:
+                if stat.size_diff < 0:
+                    continue
+                print(stat, end=";")
+            print()
+        else:
+            print("No memory usage difference")
+    else:
+        _SNAPSHOT = new_snapshot

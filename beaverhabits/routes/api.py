@@ -2,11 +2,12 @@ from datetime import datetime
 
 from fastapi import APIRouter, Depends, FastAPI, HTTPException
 from pydantic import BaseModel
+from typing import Literal
 
 from beaverhabits import views
 from beaverhabits.app.db import User
 from beaverhabits.app.dependencies import current_active_user
-from beaverhabits.storage.storage import HabitList, HabitListBuilder, HabitStatus
+from beaverhabits.storage.storage import HabitList, HabitListBuilder, HabitStatus, Habit, HabitFrequency
 
 api_router = APIRouter()
 
@@ -48,20 +49,71 @@ async def get_habits(
     return [{"id": x.id, "name": x.name} for x in habits]
 
 
+class CreateHabit(BaseModel):
+    name: str
+
+
+@api_router.post("/habits", tags=["habits"])
+async def post_habits(
+    habit: CreateHabit,
+    user: User = Depends(current_active_user),
+):
+    id = await views.create_user_habit(user, habit.name)
+    return {"id": id, "name": habit.name}
+
+
 @api_router.get("/habits/{habit_id}", tags=["habits"])
 async def get_habit_detail(
     habit_id: str,
     user: User = Depends(current_active_user),
 ):
     habit = await views.get_user_habit(user, habit_id)
-    return {
-        "id": habit.id,
-        "name": habit.name,
-        "star": habit.star,
-        "records": habit.records,
-        "status": habit.status,
-    }
+    return format_json_response(habit)
 
+
+class UpdateHabit(BaseModel):
+    class UpdateHabitPeriod(BaseModel):
+        period_type: Literal["D", "W", "M", "Y"]
+        period_count: int
+        target_count: int
+
+    name: str | None = None
+    star: bool | None = None
+    status: HabitStatus | None = None
+    period: UpdateHabitPeriod | None = None
+    tags: list[str] | None = None
+    
+
+@api_router.put("/habits/{habit_id}", tags=["habits"])
+async def put_habit(
+    habit_id: str,
+    habit: UpdateHabit,
+    user: User = Depends(current_active_user),
+):
+    existing_habit = await views.get_user_habit(user, habit_id)
+    if habit.name is not None:
+        existing_habit.name = habit.name
+    if habit.star is not None:
+        existing_habit.star = habit.star
+    if habit.status is not None:
+        existing_habit.status = habit.status
+    if habit.period is not None:
+        existing_habit.period = HabitFrequency.from_str(f"{habit.period.target_count}/{habit.period.period_count}{habit.period.period_type}")
+    if habit.tags is not None:
+        existing_habit.tags = habit.tags
+
+    return format_json_response(existing_habit)
+
+
+@api_router.delete("/habits/{habit_id}", tags=["habits"])
+async def delete_habit(
+    habit_id: str,
+    user: User = Depends(current_active_user),
+):
+    habit = await views.get_user_habit(user, habit_id)
+    await views.remove_user_habit(user, habit)
+    return format_json_response(habit)
+    
 
 @api_router.get("/habits/{habit_id}/completions", tags=["habits"])
 async def get_habit_completions(
@@ -70,7 +122,7 @@ async def get_habit_completions(
     date_start: str | None = None,
     date_end: str | None = None,
     limit: int | None = 10,
-    sort="acs",
+    sort="asc",
     user: User = Depends(current_active_user),
 ):
     habit = await views.get_user_habit(user, habit_id)
@@ -104,6 +156,7 @@ async def get_habit_completions(
 class Tick(BaseModel):
     done: bool
     date: str
+    text: str | None = None
     date_fmt: str = "%d-%m-%Y"
 
 
@@ -119,9 +172,19 @@ async def put_habit_completions(
         raise HTTPException(status_code=400, detail="Invalid date format")
 
     habit = await views.get_user_habit(user, habit_id)
-    await habit.tick(day, tick.done)
+    await habit.tick(day, tick.done, tick.text)
     return {"day": day.strftime(tick.date_fmt), "done": tick.done}
 
+def format_json_response(habit: Habit) -> dict:
+    return {
+        "id": habit.id,
+        "name": habit.name,
+        "star": habit.star,
+        "records": habit.records,
+        "status": habit.status,
+        "period": habit.period,
+        "tags": habit.tags,
+    }
 
 def init_api_routes(app: FastAPI) -> None:
     app.include_router(api_router, prefix="/api/v1")

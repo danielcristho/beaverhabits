@@ -1,25 +1,31 @@
+import asyncio
 import datetime
 import json
 import random
 from typing import Sequence
 
 from fastapi import HTTPException
-from nicegui import app, ui
+from nicegui import app, run, ui
 
 from beaverhabits.app.auth import (
     user_check_token,
     user_create,
+    user_create_reset_token,
     user_create_token,
+    user_get_by_email,
+    user_reset_password,
 )
 from beaverhabits.app.crud import get_customer_list, get_user_count, get_user_list
 from beaverhabits.app.db import User
 from beaverhabits.configs import settings
 from beaverhabits.core.backup import backup_to_telegram
-from beaverhabits.logging import logger
+from beaverhabits.frontend.components import redirect
+from beaverhabits.logger import logger
 from beaverhabits.storage import get_user_dict_storage, session_storage
 from beaverhabits.storage.dict import DAY_MASK, DictHabitList
+from beaverhabits.storage.meta import GUI_ROOT_PATH
 from beaverhabits.storage.storage import Habit, HabitList, HabitListBuilder, HabitStatus
-from beaverhabits.utils import generate_short_hash
+from beaverhabits.utils import generate_short_hash, ratelimiter, send_email
 
 user_storage = get_user_dict_storage()
 
@@ -87,6 +93,16 @@ async def get_user_habit(user: User, habit_id: str) -> Habit:
     return habit
 
 
+async def create_user_habit(user: User, name: str) -> str:
+    habit_list = await get_user_habit_list(user)
+    return await habit_list.add(name)
+
+
+async def remove_user_habit(user: User, habit: Habit) -> None:
+    habit_list = await get_user_habit_list(user)
+    await habit_list.remove(habit)
+
+
 async def get_or_create_user_habit_list(
     user: User, days: list[datetime.date]
 ) -> HabitList:
@@ -134,10 +150,12 @@ async def login_user(user: User) -> None:
 
 
 async def register_user(email: str, password: str = "") -> User:
+    logger.info(f"Registering user {email}...")
     user = await user_create(email=email, password=password)
     # Create a dummy habit list for the new users
     days = [datetime.date.today() - datetime.timedelta(days=i) for i in range(30)]
     await get_or_create_user_habit_list(user, days)
+    logger.info(f"User {email} registered successfully")
     return user
 
 
@@ -184,3 +202,42 @@ async def backup_all_users():
             logger.error(f"Failed to backup habit list for user {user.email}: {e}")
         else:
             logger.info(f"Successfully backed up habit list for user {user.email}")
+
+
+@ratelimiter(limit=3, window=1)
+async def forgot_password(email: str) -> None:
+    user = await user_get_by_email(email)
+    if user is None:
+        ui.notify(
+            "Email address not found, please check your email address and try again.",
+            color="negative",
+        )
+        return
+
+    token = user_create_reset_token(user)
+    if token is None:
+        ui.notify(
+            "Failed to create reset password token, please try again later.",
+            color="negative",
+        )
+        return
+
+    logger.debug(f"Reset password token for {user.email}: {token}")
+    async with asyncio.timeout(1):
+        await run.io_bound(
+            send_email,
+            "Reset your password",
+            f"Click the link to reset your password: {settings.APP_URL}/reset-password?token={token}",
+            [user.email],
+        )
+        ui.notify(f"Reset password email sent to {user.email}", color="positive")
+        logger.debug(f"Reset password email sent to {user.email}")
+
+
+async def reset_password(user: User, password: str) -> None:
+    new_user = await user_reset_password(user, password)
+
+    ui.notify("Password reset successfully", color="positive")
+
+    await login_user(new_user)
+    redirect(GUI_ROOT_PATH)

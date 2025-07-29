@@ -9,13 +9,17 @@ from typing import Callable, Optional, Self
 
 from dateutil.relativedelta import relativedelta
 from nicegui import app, events, ui
+from nicegui.element import Element
 from nicegui.elements.button import Button
 
+from beaverhabits import utils
 from beaverhabits.accessibility import index_badge_alternative_text
 from beaverhabits.configs import TagSelectionMode, settings
 from beaverhabits.core.backup import backup_to_telegram
 from beaverhabits.core.completions import CStatus, get_habit_date_completion
 from beaverhabits.frontend import icons
+from beaverhabits.frontend.javascript import force_checkbox_blur
+from beaverhabits.frontend.textarea import Textarea
 from beaverhabits.logger import logger
 from beaverhabits.plan import plan
 from beaverhabits.storage.dict import DAY_MASK, MONTH_MASK
@@ -27,6 +31,7 @@ from beaverhabits.storage.storage import (
     Habit,
     HabitFrequency,
     HabitList,
+    HabitOrder,
     HabitStatus,
 )
 from beaverhabits.utils import (
@@ -38,13 +43,15 @@ from beaverhabits.utils import (
     M,
     W,
     Y,
+    get_user_dark_mode,
     ratelimiter,
 )
 
 strptime = datetime.datetime.strptime
 
-DAILY_NOTE_MAX_LENGTH = 1000
 CALENDAR_EVENT_MASK = "%Y/%m/%d"
+
+PRESS_DELAY = 150
 
 
 def redirect(x):
@@ -61,26 +68,43 @@ def link(text: str, target: str, color: str = "text-white") -> ui.link:
     )
 
 
+def compat_card():
+    return ui.card().classes("no-shadow")
+
+
+@contextmanager
+def compat_menu():
+    with ui.menu() as menu:
+        yield menu
+
+    # styling
+    menu.props("transition-duration=100")
+
+
+def separator():
+    ui.separator().props('aria-hidden="true"')
+
+
 def menu_header(title: str, target: str):
-    link = ui.link(title, target=target)
-    link.classes(
-        "text-semibold text-2xl dark:text-white no-underline hover:no-underline"
-    )
-    link.props('role="heading" aria-level="1" aria-label="Go to home page"')
-    return link
+    page_title = link(title, target=target)
+    page_title.classes("text-2xl")
+    page_title.props('role="heading" aria-level="1" aria-label="Go to home page"')
+    return page_title
 
 
 def menu_icon_button(
     icon_name: str, click: Optional[Callable] = None, tooltip: str | None = None
 ) -> Button:
-    button = ui.button(icon=icon_name, color=None, on_click=click)
-    button.props("flat unelevated padding=xs backgroup=none")
-    if tooltip:
-        button.tooltip(tooltip)
-        button.props(f'aria-label="{tooltip}"')
-    else:
-        # Accessibility
-        button.props('aria-haspopup="true" aria-label="menu"')
+    with ui.button(color=None, on_click=click) as button:
+        ui.icon(icon_name).classes("theme-menu-icon")
+
+        button.props("flat unelevated padding=xs backgroup=none")
+        if tooltip:
+            button.tooltip(tooltip)
+            button.props(f'aria-label="{tooltip}"')
+        else:
+            # Accessibility
+            button.props('aria-haspopup="true" aria-label="menu"')
 
     return button
 
@@ -91,22 +115,22 @@ def menu_icon_item(*args, **kwargs):
     return menu_item.props('dense role="menuitem"')
 
 
-def habit_tick_dialog(record: CheckedRecord | None):
-    text = record.text if record else ""
+def habit_tick_dialog(record: CheckedRecord | None, label="Note"):
     with ui.dialog() as dialog, ui.card().props("flat") as card:
         dialog.props('backdrop-filter="blur(4px)"')
         card.classes("w-[640px]")
 
         with ui.column().classes("gap-0 w-full"):
-            t = ui.textarea(
-                label="Note",
-                value=text,
+            t = Textarea(
+                label=f"Note ({label})" if label else "Note",
+                value=record.text if record else "",
                 validation={
-                    "Too long!": lambda value: len(value) < DAILY_NOTE_MAX_LENGTH
+                    "Too long!": lambda value: len(value)
+                    < settings.DAILY_NOTE_MAX_LENGTH
                 },
             )
             t.classes("w-full")
-            # t.props("autogrow")
+            t.style("font-size: 14px;")
 
             with ui.row():
                 ui.button("Yes", on_click=lambda: dialog.submit((True, t.value))).props(
@@ -115,23 +139,40 @@ def habit_tick_dialog(record: CheckedRecord | None):
                 ui.button("No", on_click=lambda: dialog.submit((False, t.value))).props(
                     "flat"
                 )
-    return dialog
+
+    return dialog, t
 
 
 async def note_tick(habit: Habit, day: datetime.date) -> bool | None:
+    start = min(habit.ticked_days, default=day)
+    dialog_label = utils.format_date_difference(start, day)
+
     record = habit.record_by(day)
-    result = await habit_tick_dialog(record)
+    dialog, t = habit_tick_dialog(record, label=dialog_label)
+
+    # Realtime saving
+    async def t_value_change(e: events.ValueChangeEventArguments):
+        if record:
+
+            if abs(len(e.value) - len(record.text)) < 24:
+                return
+        await habit.tick(day, record.done if record else False, e.value)
+
+    t.on_value_change(t_value_change)
+
+    # Form submit
+    logger.info(f"Waiting for dialog {habit}...")
+    result = await dialog
+
+    await force_checkbox_blur()
 
     if result is None:
         return
 
     yes, text = result
-    if text and len(text) > DAILY_NOTE_MAX_LENGTH:
-        ui.notify("Note is too long", color="negative")
-        return
-
     record = await habit.tick(day, yes, text)
     logger.info(f"Habit ticked: {day} {yes}, note: {text}")
+
     return record.done
 
 
@@ -211,7 +252,7 @@ class HabitCheckBox(ui.checkbox):
         self.hold.clear()
         self.moving = False
         try:
-            async with asyncio.timeout(0.3):
+            async with asyncio.timeout(0.2):
                 await self.hold.wait()
         except asyncio.TimeoutError:
             # Long press diaglog
@@ -220,8 +261,6 @@ class HabitCheckBox(ui.checkbox):
             if value is not None:
                 self.value = value
                 self._refresh()
-
-            await self._blur()
 
     async def _click_event(self, e):
         self.value = e.sender.value
@@ -240,18 +279,11 @@ class HabitCheckBox(ui.checkbox):
         self.moving = True
         self.hold.set()
 
-    async def _blur(self):
-        # Resolve ripple issue
-        # https://github.com/quasarframework/quasar/blob/dev/ui/src/components/checkbox/QCheckbox.sass
-        await ui.run_javascript(
-            """
-           const checkboxes = document.querySelectorAll('.q-checkbox');
-           checkboxes.forEach(checkbox => {checkbox.blur()});
-           """
-        )
-
     def _update_style(self, value: bool):
         self.value = value
+
+        # Theme colors
+        self.classes("theme-icon-checkbox")
 
         # Accessibility
         days = (self.today - self.day).days
@@ -263,11 +295,10 @@ class HabitCheckBox(ui.checkbox):
             self.props(f'aria-label="{days} days ago"')
 
         # icons, e.g. sym_o_notes
-        checked, unchecked = icons.DONE, icons.CLOSE
+        checked, unchecked = "sym_o_check", "sym_o_close"
         if self.habit.period and self.habit.period != EVERY_DAY:
-            checked = icons.DONE_ALL
             if CStatus.PERIOD_DONE in self.status:
-                unchecked = icons.DONE
+                unchecked = "done"
 
         self.props(f'checked-icon="{checked}" unchecked-icon="{unchecked}" keep-color')
 
@@ -293,16 +324,30 @@ class HabitOrderCard(ui.card):
         self.on("mouseout", lambda: self.btn and self.btn.classes(remove="opacity-100"))
 
 
+class HabitNameTagBadge(ui.badge):
+    def __init__(self, habit: Habit):
+        tags = " ".join([f"#{tag}" for tag in habit.tags])
+        super().__init__(tags)
+        self.classes("bg-transparent")
+
 
 class HabitNameInput(ui.input):
-    def __init__(self, habit: Habit, label: str = "") -> None:
+    def __init__(
+        self,
+        habit: Habit,
+        label: str = "",
+        refresh: Callable | None = None,
+        auto_save: bool = True,
+    ) -> None:
         super().__init__(value=self.encode_name(habit), label=label)
         self.habit = habit
         self.validation = self._validate
+        self.refresh = refresh
         self.props("dense hide-bottom-space")
 
-        self.on("blur", self._on_blur)
-        self.on("keydown.enter", self._on_keydown_enter)
+        if auto_save:
+            self.on("blur", self._on_blur)
+            self.on("keydown.enter", self._on_keydown_enter)
 
     async def _on_keydown_enter(self):
         await self._save(self.value)
@@ -311,20 +356,33 @@ class HabitNameInput(ui.input):
     async def _on_blur(self):
         await self._save(self.value)
 
-    @plan.pro_required("Pro plan required to update category")
     async def _save(self, value: str):
         name, tags = self.decode_name(value)
         self.habit.name = name
-        self.habit.tags = tags
         logger.info(f"Habit Name changed to {name}")
+        self.habit.tags = tags
         logger.info(f"Habit Tags changed to {tags}")
+
         self.value = self.encode_name(self.habit)
+
+        if self.habit.tags:
+            self.habit.habit_list.order_by = HabitOrder.CATEGORY
+            if self.refresh:
+                self.refresh()
 
     def _validate(self, value: str) -> Optional[str]:
         if not value:
             return "Name is required"
         if len(value) > 50:
             return "Too long"
+
+    @staticmethod
+    def decode_name(name: str) -> tuple[str, list[str]]:
+        if "#" not in name:
+            return name, []
+
+        tokens = name.split("#")
+        return tokens[0].strip(), [x.strip() for x in tokens[1:]]
 
     @staticmethod
     def encode_name(habit: Habit) -> str:
@@ -334,14 +392,6 @@ class HabitNameInput(ui.input):
             name = f"{name} {' '.join(tags)}"
 
         return name
-
-    @staticmethod
-    def decode_name(name: str) -> tuple[str, list[str]]:
-        if "#" not in name:
-            return name, []
-
-        tokens = name.split("#")
-        return tokens[0].strip(), [x.strip() for x in tokens[1:]]
 
 
 class HabitStarCheckbox(ui.checkbox):
@@ -407,15 +457,16 @@ class HabitAddButton(ui.input):
         self.habit_list = habit_list
         self.refresh = refresh
         self.on("keydown.enter", self._async_task)
-        self.props('dense color="white" label-color="white"')
+        self.props("dense")
 
     async def _async_task(self):
         # Check premium plan
         if await plan.habit_limit_reached(self.habit_list):
             return
 
-        await self.habit_list.add(self.value)
-        logger.info(f"Added new habit: {self.value}")
+        name, tags = HabitNameInput.decode_name(self.value)
+        await self.habit_list.add(name, tags)
+        logger.info(f"Added new habit: {name} {tags}")
         self.refresh()
         self.set_value("")
 
@@ -561,10 +612,14 @@ class CalendarCheckBox(ui.checkbox):
         self.props(f'unchecked-icon="{unchecked_icon}"')
         self.props(f'checked-icon="{checked_icon}"')
 
-        self.on_value_change(self._async_task)
+        self.on_value_change(self._async_click_task)
         if readonly:
             self.on("mousedown.prevent", lambda: True)
             self.on("touchstart.prevent", lambda: True)
+
+        # Hold on event flag
+        self.props(f'data-long-press-delay="{PRESS_DELAY}"')
+        self.on("long-press", self._async_long_press_task)
 
     @property
     def ticked(self) -> bool:
@@ -572,22 +627,44 @@ class CalendarCheckBox(ui.checkbox):
         return bool(record and record.done)
 
     def _icon_svg(self):
+        unchecked_text_color = checked_text_color = "rgb(255,255,255)"
         unchecked_color, checked_color = "rgb(54,54,54)", icons.PRIMARY_COLOR
         if CStatus.PERIOD_DONE in self.status:
             # Normalization + Linear Interpolation
             unchecked_color = "rgb(40,87,141)"
+
+        dark = get_user_dark_mode()
+        if dark == False:
+            unchecked_color = "rgb(222,222,222)"
+            unchecked_text_color = "rgb(100,100,100)"
+
         return (
-            icons.SQUARE.format(color=unchecked_color, text=self.day.day),
-            icons.SQUARE.format(color=checked_color, text=self.day.day),
+            icons.SQUARE.format(
+                color=unchecked_color,
+                text=self.day.day,
+                text_color=unchecked_text_color,
+            ),
+            icons.SQUARE.format(
+                color=checked_color, text=self.day.day, text_color=checked_text_color
+            ),
         )
 
-    async def _async_task(self, e: events.ValueChangeEventArguments):
+    async def _async_click_task(self, e: events.ValueChangeEventArguments):
         # Update persistent storage
         await self.habit.tick(self.day, e.value)
         logger.info(f"Day {self.day} ticked: {e.value}")
 
         if self.refresh:
             logger.debug("refresh page")
+            self.refresh()
+
+    async def _async_long_press_task(self):
+        # Long press diaglog
+        value = await note_tick(self.habit, self.day)
+        if value is not None:
+            self.value = value
+
+        if self.refresh:
             self.refresh()
 
 
@@ -607,7 +684,9 @@ def habit_heat_map(
         # Headers
         with ui.row(wrap=False).classes("gap-0"):
             for header in calendar.headers:
-                header_lable = ui.label(header).classes("text-gray-300 text-center")
+                header_lable = ui.label(header).classes(
+                    "text-gray-600 dark:text-gray-300 text-center"
+                )
                 header_lable.style("width: 20px; line-height: 18px; font-size: 9px;")
             ui.label().style("width: 22px;")
 
@@ -622,7 +701,9 @@ def habit_heat_map(
                         ui.label().style("width: 20px; height: 20px;")
 
                 week_day_abbr_label = ui.label(calendar.week_days[i])
-                week_day_abbr_label.classes("indent-1.5 text-gray-300")
+                week_day_abbr_label.classes(
+                    "indent-1.5 text-gray-600 dark:text-gray-300"
+                )
                 week_day_abbr_label.style(
                     "width: 22px; line-height: 20px; font-size: 9px;"
                 )
@@ -719,6 +800,12 @@ class HabitTag(ui.chip):
         self.style("margin: 0px 2px")
 
 
+async def on_dblclick(habit, day):
+    await note_tick(habit, day)
+    habit_notes.refresh()
+
+
+@ui.refreshable
 def habit_notes(habit: Habit, limit: int = 10):
     notes = [x for x in habit.records if x.text]
     notes.sort(key=lambda x: x.day, reverse=True)
@@ -729,12 +816,17 @@ def habit_notes(habit: Habit, limit: int = 10):
             # text = record.text.replace(" ", "&nbsp;")
             color = "primary" if record.done else "grey-8"
             with ui.timeline_entry(
-                body=text,
                 subtitle=record.day.strftime("%B %d, %Y"),
                 color=color,
             ) as entry:
+                with ui.column().classes("gap-0"):
+                    try:
+                        ui.html(text)
+                    except Exception as e:
+                        ui.label(f"Error rendering note: {e}").classes("text-red-500")
+
                 # https://github.com/zauberzeug/nicegui/wiki/FAQs#why-do-all-my-elements-have-the-same-value
-                entry.on("dblclick", lambda _, d=record.day: note_tick(habit, d))
+                entry.on("dblclick", lambda _, d=record.day: on_dblclick(habit, d))
 
 
 def habit_streak(today: datetime.date, habit: Habit):
@@ -845,39 +937,35 @@ def tag_filter_component(active_habits: list[Habit], refresh: Callable):
         TagChip("Others", refresh=refresh)
 
         row.classes("tag-filter")
-        ui.add_body_html(
+        ui.run_javascript(
             """
-            <script>
-            document.addEventListener("DOMContentLoaded", function() {
-                const element = document.querySelector(".tag-filter");
-            
-                // scroll event
-                window.addEventListener('wheel', function(event) {
-                    if (window.scrollY === 0 && event.deltaY < -1) {
-                        element.classList.remove("hidden");
-                    }
-                    if (window.scrollY === 0 && event.deltaY > 1) {
-                        element.classList.add("hidden");
-                    }
-                }, { passive: true  });
+            const element = document.querySelector(".tag-filter");
+        
+            // scroll event
+            window.addEventListener('wheel', function(event) {
+                if (window.scrollY === 0 && event.deltaY < -30) {
+                    element.classList.remove("hidden");
+                }
+                if (window.scrollY === 0 && event.deltaY > 30) {
+                    element.classList.add("hidden");
+                }
+            }, { passive: true  });
 
-                // touch event
-                let startY;
-                window.addEventListener('touchstart', function(event) {
-                    startY = event.touches[0].clientY;
-                }, { passive: true  });
-                window.addEventListener('touchmove', function(event) {
-                    let currentY = event.touches[0].clientY;
-                    if (window.scrollY === 0 && currentY - startY < -1) {
-                        element.classList.add("hidden");
-                    }
-                    if (window.scrollY === 0 && currentY - startY > 1) {
-                        element.classList.remove("hidden");
-                    }
-                }, { passive: true  });
-            });
-            </script>
-        """
+            // touch event
+            let startY;
+            window.addEventListener('touchstart', function(event) {
+                startY = event.touches[0].clientY;
+            }, { passive: true  });
+            window.addEventListener('touchmove', function(event) {
+                let currentY = event.touches[0].clientY;
+                if (window.scrollY === 0 && currentY - startY < -30) {
+                    element.classList.add("hidden");
+                }
+                if (window.scrollY === 0 && currentY - startY > 30) {
+                    element.classList.remove("hidden");
+                }
+            }, { passive: true  });
+            """
         )
 
 
@@ -895,12 +983,6 @@ def habits_by_tags(active_habits: list[Habit]) -> dict[str, list[Habit]]:
             habits.setdefault(tag, []).append(habit)
     # without tags
     habits["Others"] = [h for h in active_habits if not h.tags]
-
-    selected_tags = TagManager.get_all() & set(all_tags)
-    if selected_tags:
-        habits = OrderedDict(
-            (key, value) for key, value in habits.items() if key in selected_tags
-        )
 
     return habits
 
@@ -993,6 +1075,13 @@ def habit_backup_dialog(habit_list: HabitList) -> ui.dialog:
     return dialog
 
 
+def habit_remove(habit: Habit):
+    habit.status = HabitStatus.ARCHIVED
+
+    # wildly reload the page
+    ui.navigate.reload()
+
+
 def habit_edit_dialog(habit: Habit) -> ui.dialog:
     p = habit.period or EVERY_DAY
 
@@ -1024,10 +1113,15 @@ def habit_edit_dialog(habit: Habit) -> ui.dialog:
         logger.info(f"Habit period changed to {habit.period}")
         dialog.close()
 
-        # wildly reload the page
-        ui.navigate.reload()
-
         return True
+
+    async def save() -> None:
+        if habit not in habit.habit_list.habits:
+            await habit.habit_list.add(habit.name, tags=habit.tags)
+
+        try_update_period()
+
+        dialog.submit(True)
 
     def reset():
         period_type.value = EVERY_DAY.period_type
@@ -1039,13 +1133,14 @@ def habit_edit_dialog(habit: Habit) -> ui.dialog:
         card.classes("w-5/6 max-w-64")
 
         with ui.column().classes("w-full"):
-            HabitNameInput(habit, label="Name").classes("w-full")
+            habit_name_input = HabitNameInput(habit, label="Name")
+            habit_name_input.classes("w-full")
 
             # Habit Frequency
             with ui.row().classes("items-center"):
                 target_count = number_input(p.target_count, label="Times")
 
-                ui.label("/").classes("text-gray-300")
+                ui.label("/").classes("dark:text-gray-300")
 
                 period_count = number_input(value=p.period_count, label="Every")
                 period_type = ui.select(
@@ -1053,8 +1148,8 @@ def habit_edit_dialog(habit: Habit) -> ui.dialog:
                 ).props("dense")
 
             with ui.row():
-                ui.button("Save", on_click=try_update_period).props("flat")
-                ui.button("Reset", on_click=reset).props("flat")
+                ui.button("Save", on_click=save).props("flat dense")
+                ui.button("Reset", on_click=reset).props("flat dense")
 
     return dialog
 
@@ -1108,3 +1203,47 @@ def auth_card(title: str, func: Callable):
             auth_header(title)
             yield
             ui.button("Continue", on_click=func).props("dense").classes("w-full")
+
+
+def habit_name_menu(
+    habit: Habit,
+    refresh: Callable | None = None,
+) -> Element:
+    root_path = get_root_path()
+    target_page = os.path.join(root_path, "habits", str(habit.id))
+
+    edit_dialog = habit_edit_dialog(habit)
+    copy_dialog = habit_edit_dialog(habit.copy())
+
+    async def edit_habit():
+        result = await edit_dialog
+        if refresh and result:
+            refresh()
+
+    async def copy_habit():
+        result = await copy_dialog
+        if refresh and result:
+            refresh()
+
+    async def remove_habit():
+        habit.status = HabitStatus.ARCHIVED
+        if refresh:
+            refresh()
+
+    with link(habit.name, target=target_page) as name:
+        with ui.menu() as menu:
+            menu.props("auto-close no-parent-event transition-duration=0")
+            menu_icon_item("Edit", edit_habit)
+            separator()
+            menu_icon_item("Duplicate", copy_habit)
+            separator()
+            menu_icon_item("Archive", remove_habit)
+            separator()
+            menu_icon_item("Reorder", lambda: redirect("order"))
+
+    # presss and hold
+    name.props(f'data-long-press-delay="{PRESS_DELAY}"')
+    name.on("long-press.prevent", menu.open)
+    name.on("contextmenu", menu.open)
+
+    return name

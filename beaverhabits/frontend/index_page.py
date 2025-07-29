@@ -1,21 +1,22 @@
 import datetime
 import os
+from collections import OrderedDict
 from typing import List
 
 from nicegui import ui
 
 from beaverhabits.configs import settings
 from beaverhabits.core.completions import get_habit_date_completion
-from beaverhabits.frontend import javascript
+from beaverhabits.frontend import javascript, textarea
 from beaverhabits.frontend.components import (
     HabitCheckBox,
     IndexBadge,
+    TagManager,
+    habit_name_menu,
     habits_by_tags,
-    link,
     tag_filter_component,
 )
 from beaverhabits.frontend.layout import layout
-from beaverhabits.storage.meta import get_root_path
 from beaverhabits.storage.storage import (
     Habit,
     HabitList,
@@ -31,11 +32,10 @@ LEFT_CLASSES, RIGHT_CLASSES = (
     # grid 2 2 2 2 2
     f"col-span-{DATE_COLS} px-1 place-self-center",
 )
-COMPAT_CLASSES = "pl-4 pr-0 py-0 shadow-none"
+COMPAT_CLASSES = "pl-4 pr-0 py-0 dark:shadow-none"
 
 # Sticky date row for long habit list
-STICKY_STYLES = "position: sticky; top: 0; z-index: 1; background-color: #121212;"
-HEADER_STYLES = "font-size: 85%; font-weight: 500; color: #9e9e9e"
+STICKY_STYLES = "position: sticky; top: 0; z-index: 1;"
 
 
 def grid(columns, rows):
@@ -59,10 +59,7 @@ def day_headers(days: list[datetime.date]):
 
 
 def habit_row(habit: Habit, tag: str, days: list[datetime.date]):
-    # truncate name
-    root_path = get_root_path()
-    redirect_page = os.path.join(root_path, "habits", str(habit.id))
-    name = link(habit.name, target=redirect_page)
+    name = habit_name_menu(habit, index_page_ui.refresh)
     name.classes(LEFT_CLASSES)
     name.props(f'role="heading" aria-level="2" aria-label="{habit.name}"')
 
@@ -74,6 +71,7 @@ def habit_row(habit: Habit, tag: str, days: list[datetime.date]):
             status, habit, today, day, refresh=habit_list_ui.refresh
         )
         checkbox.classes(RIGHT_CLASSES)
+        # checkbox.classes("theme-icon-lazy invisible")
 
     if settings.INDEX_SHOW_HABIT_COUNT:
         IndexBadge(today, habit).classes(RIGHT_CLASSES)
@@ -87,26 +85,28 @@ def habit_list_ui(days: list[datetime.date], active_habits: List[Habit]):
     with ui.column().classes("gap-1.5"):
         # Date Headers
         with grid(columns, 2).classes(COMPAT_CLASSES).style(STICKY_STYLES) as g:
-            g.props('aria-hidden="true"')
+            g.props('aria-hidden="true"').classes("theme-header-date")
             for it in (week_headers(days), day_headers(days)):
-                ui.label("").classes(LEFT_CLASSES).style(HEADER_STYLES)
+                ui.label("").classes(LEFT_CLASSES)
                 for label in it:
-                    ui.label(label).classes(RIGHT_CLASSES).style(HEADER_STYLES)
+                    ui.label(label).classes(RIGHT_CLASSES)
 
         # Habit Rows
         groups = habits_by_tags(active_habits)
+
         for tag, habit_list in groups.items():
             if not habit_list:
                 continue
 
             for habit in habit_list:
-                with ui.card().classes(COMPAT_CLASSES):
+                with ui.card().classes(COMPAT_CLASSES).classes("theme-card-shadow"):
                     with grid(columns, 1):
                         habit_row(habit, tag, days)
 
             ui.space()
 
 
+@ui.refreshable
 def index_page_ui(days: list[datetime.date], habits: HabitList):
     active_habits = HabitListBuilder(habits).status(HabitStatus.ACTIVE).build()
     if not active_habits:
@@ -117,11 +117,8 @@ def index_page_ui(days: list[datetime.date], habits: HabitList):
         days = list(reversed(days))
 
     with layout(habit_list=habits):
-        # Category
-        tag_filter_component(active_habits, refresh=habit_list_ui.refresh)
         habit_list_ui(days, active_habits)
 
-    # Prevent long press context menu for svg image elements
-    ui.context.client.on_connect(javascript.prevent_context_menu)
     # placeholder to preload js cache (daily notes)
+    textarea.Textarea("").classes("hidden").props('aria-hidden="true"')
     ui.input("").classes("hidden").props('aria-hidden="true"')

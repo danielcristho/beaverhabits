@@ -1,7 +1,8 @@
-from typing import Optional
+import io
+from typing import Annotated, Optional
 
-from fastapi import Depends, FastAPI, HTTPException, Request, Response, status
-from fastapi.responses import RedirectResponse
+from fastapi import Depends, FastAPI, File, HTTPException, Request, UploadFile, status
+from fastapi.responses import RedirectResponse, StreamingResponse
 from nicegui import Client, app, ui
 
 from beaverhabits import const, views
@@ -16,7 +17,7 @@ from beaverhabits.app.dependencies import (
     get_reset_user,
 )
 from beaverhabits.configs import settings
-from beaverhabits.frontend import paddle_page
+from beaverhabits.frontend import javascript, paddle_page
 from beaverhabits.frontend.add_page import add_page_ui
 from beaverhabits.frontend.admin import admin_page
 from beaverhabits.frontend.components import (
@@ -32,10 +33,12 @@ from beaverhabits.frontend.import_page import import_ui_page
 from beaverhabits.frontend.index_page import index_page_ui
 from beaverhabits.frontend.layout import custom_headers, redirect
 from beaverhabits.frontend.order_page import order_page_ui
+from beaverhabits.frontend.settings_page import settings_page
 from beaverhabits.frontend.streaks import heatmap_page
 from beaverhabits.logger import logger
+from beaverhabits.storage import image_storage
 from beaverhabits.storage.meta import GUI_ROOT_PATH
-from beaverhabits.utils import dummy_days, get_user_today_date
+from beaverhabits.utils import dummy_days, fetch_user_dark_mode, get_user_today_date
 
 UNRESTRICTED_PAGE_ROUTES = ("/login", "/register")
 
@@ -144,6 +147,12 @@ async def gui_import(user: User = Depends(current_active_user)) -> None:
     import_ui_page(user)
 
 
+@ui.page("/settings")
+@ui.page("/gui/settings")
+async def gui_settings(user: User = Depends(current_active_user)) -> None:
+    await settings_page(user)
+
+
 @ui.page("/login")
 async def login_page(client: Client) -> Optional[RedirectResponse]:
     custom_headers()
@@ -162,6 +171,7 @@ async def login_page(client: Client) -> Optional[RedirectResponse]:
         user = await user_authenticate(email=email.value, password=password.value)
         if user:
             await views.login_user(user)
+            await views.cache_user_configs(user)
             ui.navigate.to(GUI_ROOT_PATH)
         else:
             ui.notify("email or password wrong!", color="negative")
@@ -247,6 +257,28 @@ async def forgot_password_page(user: User = Depends(get_reset_user)):
         password2 = auth_password("Confirm password")
 
 
+@app.post("/assets")
+async def upload_note_image(
+    file: Annotated[bytes, File()], user: User = Depends(current_active_user)
+):
+    if not file:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="No file provided"
+        )
+
+    return await image_storage.save(file, user)
+
+
+@app.get("/assets/{image_id}")
+async def get_note_image(image_id: str, user: User = Depends(current_active_user)):
+    img = await image_storage.get(image_id, user)
+    if not (img and img.blob):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Image not found"
+        )
+    return StreamingResponse(io.BytesIO(img.blob), media_type="image/png")
+
+
 if settings.ENABLE_PLAN:
     from beaverhabits.frontend.paddle_page import PRIVACY, TERMS
     from beaverhabits.frontend.pricing_page import landing_page
@@ -313,10 +345,17 @@ def init_gui_routes(fastapi_app: FastAPI):
     oneyear = 365 * 24 * 60 * 60
     app.add_static_files("/statics", "statics", max_cache_age=oneyear)
     app.on_exception(handle_exception)
+    app.on_connect(fetch_user_dark_mode)
+    # app.on_connect(views.apply_theme_style)
+
     ui.run_with(
         fastapi_app,
         title=const.PAGE_TITLE,
         storage_secret=settings.NICEGUI_STORAGE_SECRET,
         favicon="statics/images/favicon.svg",
-        dark=True,
+        dark=settings.DARK_MODE,
+        reconnect_timeout=10,
+        # Viewport Settings for Web Applications
+        # https://developer.apple.com/library/archive/documentation/AppleApplications/Reference/SafariWebContent/UsingtheViewport/UsingtheViewport.html#//apple_ref/doc/uid/TP40006509-SW19
+        viewport="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no",
     )

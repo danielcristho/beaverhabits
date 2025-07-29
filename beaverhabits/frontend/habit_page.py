@@ -4,6 +4,7 @@ from contextlib import contextmanager
 
 from nicegui import ui
 
+from beaverhabits.frontend import javascript
 from beaverhabits.frontend.components import (
     CalendarHeatmap,
     HabitDateInput,

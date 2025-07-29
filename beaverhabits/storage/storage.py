@@ -4,7 +4,7 @@ from dataclasses import asdict, dataclass
 from enum import Enum, auto
 from typing import List, Literal, Optional, Protocol, Self
 
-from dataclasses_json import DataClassJsonMixin, dataclass_json
+from dataclasses_json import DataClassJsonMixin
 
 from beaverhabits.app.db import User
 from beaverhabits.utils import PERIOD_TYPES, D
@@ -101,6 +101,9 @@ EVERY_DAY = HabitFrequency(D, 1, 1)
 
 class Habit[R: CheckedRecord](Protocol):
     @property
+    def habit_list(self) -> "HabitList": ...
+
+    @property
     def id(self) -> str | int: ...
 
     @property
@@ -153,6 +156,8 @@ class Habit[R: CheckedRecord](Protocol):
         self, day: datetime.date, done: bool, text: str | None = None
     ) -> CheckedRecord: ...
 
+    def copy(self) -> "Habit": ...
+
     def to_dict(self) -> dict: ...
 
     def __str__(self):
@@ -196,7 +201,7 @@ class HabitList[H: Habit](Protocol):
     @backup.setter
     def backup(self, value: Backup) -> None: ...
 
-    async def add(self, name: str) -> str: ...
+    async def add(self, name: str, tags: list | None = None) -> str: ...
 
     async def remove(self, item: H) -> None: ...
 
@@ -236,7 +241,7 @@ class HabitListBuilder:
         if self.habit_list.order_by == HabitOrder.NAME:
             habits.sort(key=lambda x: x.name.lower())
         elif self.habit_list.order_by == HabitOrder.CATEGORY:
-            habits.sort(key=lambda x: x.tags[0].lower() if x.tags else "")
+            habits.sort(key=lambda x: (0, x.tags[0].lower()) if x.tags else (1, ""))
         elif o := self.habit_list.order:
             habits.sort(
                 key=lambda x: (o.index(str(x.id)) if str(x.id) in o else float("inf"))
@@ -250,3 +255,17 @@ class HabitListBuilder:
         habits.sort(key=lambda x: all_status.index(x.status))
 
         return habits
+
+
+@dataclass
+class ImageObject(DataClassJsonMixin):
+    id: str
+    url: str
+    blob: bytes | None = None
+    owner: str | None = None
+
+
+class ImageStorage(Protocol):
+    async def save(self, byte_data: bytes, user: User | None = None) -> ImageObject: ...
+
+    async def get(self, uuid: str, user: User | None = None) -> ImageObject | None: ...

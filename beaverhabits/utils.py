@@ -1,4 +1,5 @@
 import datetime
+import functools
 import gc
 import hashlib
 import os
@@ -15,7 +16,7 @@ import pytz
 from cachetools import TTLCache
 from dateutil.relativedelta import relativedelta
 from fastapi import HTTPException
-from nicegui import app, ui
+from nicegui import app, background_tasks, ui
 from psutil._common import bytes2human
 from starlette import status
 
@@ -24,12 +25,23 @@ from beaverhabits.logger import logger
 
 WEEK_DAYS = 7
 TIME_ZONE_KEY = "timezone"
+DARK_MODE_KEY = "dark_mode"
 
 PERIOD_TYPES = D, W, M, Y = "D", "W", "M", "Y"
 PERIOD_TYPES_FOR_HUMAN = {D: "Day(s)", W: "Week(s)", M: "Month(s)", Y: "Year(s)"}
 PERIOD_TYPE: TypeAlias = Literal["D", "W", "M", "Y"]
 
 
+def on_connect_task(fn):
+    @functools.wraps(fn)
+    async def wrapper(*args, **kwargs):
+        logger.info(f"On connect: {fn.__name__}")
+        return await fn(*args, **kwargs)
+
+    return wrapper
+
+
+@on_connect_task
 async def fetch_user_timezone() -> None:
     timezone = await ui.run_javascript(
         "Intl.DateTimeFormat().resolvedOptions().timeZone"
@@ -39,14 +51,49 @@ async def fetch_user_timezone() -> None:
 
 
 async def get_or_create_user_timezone() -> str:
-    logger.info("Getting user timezone...")
     if timezone := app.storage.user.get(TIME_ZONE_KEY):
-        logger.info(f"User timezone from storage: {timezone}")
         return timezone
 
     ui.context.client.on_connect(fetch_user_timezone)
 
     return "UTC"
+
+
+@on_connect_task
+async def fetch_user_dark_mode() -> None:
+    if app.storage.user.get(DARK_MODE_KEY) is not None:
+        return
+
+    try:
+        dark = await ui.run_javascript("Quasar.Dark.isActive")
+        app.storage.user[DARK_MODE_KEY] = dark
+        logger.info(f"User dark mode from browser: {dark}")
+    except Exception as e:
+        logger.error(f"Error fetching user dark mode: {e}")
+
+
+def set_user_dark_mode(dark: bool) -> None:
+    if settings.DARK_MODE != None:
+        raise ValueError("Dark mode is set in settings, cannot change it manually.")
+
+    try:
+        app.storage.user[DARK_MODE_KEY] = dark
+        logger.info(f"User dark mode set to: {dark}")
+    except Exception as e:
+        logger.error(f"Error setting user dark mode: {e}")
+
+
+def get_user_dark_mode() -> bool | None:
+    if settings.DARK_MODE != None:
+        return settings.DARK_MODE
+
+    try:
+        dark = app.storage.user.get(DARK_MODE_KEY)
+    except Exception as e:
+        logger.error(f"Error get user dark mode: {e}")
+        dark = None
+
+    return dark
 
 
 async def get_user_today_date() -> datetime.date:
@@ -260,3 +307,23 @@ def print_memory_snapshot():
             print("No memory usage difference")
     else:
         _SNAPSHOT = new_snapshot
+
+
+def format_date_difference(start: datetime.date, today: datetime.date) -> str:
+    if today < start:
+        return ""
+
+    start = start - datetime.timedelta(days=1)
+    diff = relativedelta(today, start)
+
+    parts = []
+    if diff.years >= 1:
+        parts.append(f"{diff.years} years")
+
+    if diff.months >= 1:
+        parts.append(f"{diff.months} months")
+
+    if diff.days >= 1:
+        parts.append(f"{diff.days} days")
+
+    return " ".join(parts)

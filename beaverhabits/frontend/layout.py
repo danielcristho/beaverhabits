@@ -1,17 +1,21 @@
+import time
 from contextlib import contextmanager
 
-from nicegui import context, ui
+from nicegui import background_tasks, ui
 
+from beaverhabits import views
 from beaverhabits.app.auth import user_logout
 from beaverhabits.configs import settings
-from beaverhabits.frontend import icons
+from beaverhabits.frontend import css
 from beaverhabits.frontend.components import (
     habit_edit_dialog,
     menu_header,
     menu_icon_button,
     menu_icon_item,
     redirect,
+    separator,
 )
+from beaverhabits.frontend.javascript import PREVENT_CONTEXT_MENU
 from beaverhabits.frontend.menu import add_menu, sort_menu
 from beaverhabits.storage.meta import (
     get_root_path,
@@ -23,26 +27,24 @@ from beaverhabits.storage.storage import Habit, HabitList
 
 
 def pwa_headers():
-    # Apple touch icon
+    # Extend background to iOS notch
     ui.add_head_html(
-        '<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">'
-    )
-    ui.add_head_html('<meta name="apple-mobile-web-app-title" content="Beaver">')
-    ui.add_head_html(
-        '<meta name="apple-mobile-web-app-status-bar-style" content="black">'
-    )
-    ui.add_head_html('<meta name="theme-color" content="#121212">')
-    # viewBox="90 90 220 220"
-    ui.add_head_html(
-        '<link rel="apple-touch-icon" href="/statics/images/apple-touch-icon-v4.png">'
+        """
+        <link rel="apple-touch-icon" href="/statics/images/apple-touch-icon-v4.png">
+        
+        <meta name="apple-mobile-web-app-title" content="Beaver">
+        <meta name="application-name" content="Beaver">
+        
+        <meta name="theme-color" content="#F9F9F9" media="(prefers-color-scheme: light)" />
+        <meta name="theme-color" content="#121212" media="(prefers-color-scheme: dark)" />
+        """
     )
 
-    # PWA support
-    ui.add_head_html('<link rel="manifest" href="/statics/pwa/manifest.json">')
-
-    # Experimental iOS standalone mode
+    # Experimental PWA
     if settings.ENABLE_IOS_STANDALONE:
+        # Hiding Safari User Interface Components
         ui.add_head_html('<meta name="mobile-web-app-capable" content="yes">')
+        ui.add_head_html('<link rel="manifest" href="/statics/pwa/manifest.json">')
 
 
 def custom_headers():
@@ -57,18 +59,20 @@ def custom_headers():
             f'<script defer src="https://cloud.umami.is/script.js" data-website-id="{settings.UMAMI_ANALYTICS_ID}"></script>'
         )
 
+    # Long-press event
+    ui.add_head_html('<script src="/statics/libs/long-press-event.min.js"></script>')
+
     # Prevent white flash on page load
-    ui.add_css("body { background-color: #121212; color: white;  }")
+    ui.add_css(css.WHITE_FLASH_PREVENT)
 
-
-def separator():
-    ui.separator().props('aria-hidden="true"')
+    # prevent context menu
+    ui.add_body_html(f"<script>{PREVENT_CONTEXT_MENU}</script>")
 
 
 @ui.refreshable
 def menu_component():
     """Dropdown menu for the top-right corner of the page."""
-    with ui.menu().props('role="menu"'):
+    with ui.menu().props('role="menu" transition-duration="50"'):
         add_menu()
         separator()
 
@@ -90,12 +94,12 @@ def layout(
     habit: Habit | None = None,
     habit_list: HabitList | None = None,
 ):
-    """Base layout for all pages."""
+    # Standard headers
+    custom_headers()
+    pwa_headers()
+
     # Center the content on small screens
     with ui.column().classes("mx-auto mx-0"):
-        # Standard headers
-        custom_headers()
-        pwa_headers()
 
         # Layout wrapper
         with ui.row().classes("w-full gap-x-1"):
@@ -105,13 +109,13 @@ def layout(
 
             if habit:
                 edit_dialog = habit_edit_dialog(habit)
-                edit_btn = menu_icon_button(icons.EDIT, tooltip="Edit habit")
+                edit_btn = menu_icon_button("sym_r_pen_size_3", tooltip="Edit habit")
                 edit_btn.on_click(edit_dialog.open)
             elif habit_list and "add" in page_path():
-                with menu_icon_button(icons.SORT, tooltip="Sort"):
+                with menu_icon_button("sym_o_swap_vert", tooltip="Sort"):
                     sort_menu(habit_list)
 
-            with menu_icon_button(icons.MENU):
+            with menu_icon_button("sym_o_menu"):
                 menu_component()
 
         yield

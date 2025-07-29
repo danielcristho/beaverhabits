@@ -40,6 +40,7 @@ class Settings(BaseSettings):
     PADDLE_PRODUCT_ID: str = ""
     PADDLE_PRICE_ID: str = ""
     PADDLE_CALLBACK_KEY: str = ""
+    HIGHLIGHT_IO_PROJECT_ID: str = ""
 
     # Email
     SMTP_EMAIL_USERNAME: str = ""
@@ -49,6 +50,7 @@ class Settings(BaseSettings):
     NICEGUI_STORAGE_SECRET: str = "dev"
     GUI_MOUNT_PATH: str = "/gui"
     DEMO_MOUNT_PATH: str = "/demo"
+    DARK_MODE: bool | None = None
 
     # Storage
     HABITS_STORAGE: StorageType = StorageType.USER_DATABASE
@@ -72,6 +74,8 @@ class Settings(BaseSettings):
     INDEX_HABIT_NAME_COLUMNS: int = 5
     INDEX_HABIT_DATE_COLUMNS: int = 5
     INDEX_HABIT_DATE_REVERSE: bool = False
+
+    DAILY_NOTE_MAX_LENGTH: int = 1024
 
     # Backup inverval(in seconds), default is oneday
     ENABLE_DAILY_BACKUP: bool = False
